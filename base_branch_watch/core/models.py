@@ -144,6 +144,17 @@ class RepoStatus:
         return StatusKind.UNPUSHED if self.unpushed > 0 else StatusKind.UP_TO_DATE
 
     @property
+    def worst_branch_status(self) -> "BranchStatus | None":
+        """The single BranchStatus with the worst-wins kind (same ranking as
+        `worst_kind`), or None if this repo has no per-base statuses yet.
+        Used by notify/osascript_notifier.py to build a short, single-line
+        status for a repo that may have multiple configured base branches.
+        """
+        if not self.branch_statuses:
+            return None
+        return max(self.branch_statuses, key=lambda bs: _WORST_KIND_RANK[bs.kind])
+
+    @property
     def severity(self) -> Severity:
         return _KIND_SEVERITY[self.worst_kind]
 
