@@ -7,7 +7,9 @@ from base_branch_watch.core.models import RepoConfig, StatusKind
 def test_check_repo_behind_reports_behind_count_and_kind(fixture_repos, default_branch_name):
     _origin, clone_path = fixture_repos
 
-    status = git_ops.check_repo(RepoConfig(repo_path=clone_path, base_branches=[default_branch_name]))
+    status = git_ops.check_repo(
+        RepoConfig(repo_path=clone_path, base_branches=[default_branch_name])
+    )
 
     assert status.failure_reason is None
     assert len(status.branch_statuses) == 1
