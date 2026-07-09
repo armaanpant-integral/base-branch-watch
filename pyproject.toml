@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "base-branch-watch"
+version = "0.1.0"
+description = "macOS menu-bar companion that watches configured repos' base branches and gates pushes against merge conflicts."
+requires-python = ">=3.11"
+dependencies = [
+    "rumps>=0.4.0",
+    "pyobjc-framework-Cocoa",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "ruff",
+]
+
+[project.scripts]
+bbwatch-app = "base_branch_watch.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["base_branch_watch*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
