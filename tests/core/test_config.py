@@ -63,3 +63,61 @@ def test_save_config_uses_os_replace(monkeypatch, bbw_config_dir):
     config.save_config(config.AppConfig())
 
     assert len(calls) == 1
+
+
+def test_parse_base_branches_splits_strips_dedupes_drops_empties():
+    result = config.parse_base_branches("main, develop ,main,, release")
+    assert result == ["main", "develop", "release"]
+
+
+def test_parse_base_branches_whitespace_only_is_empty_list():
+    assert config.parse_base_branches("   ") == []
+
+
+def test_parse_base_branches_single_entry():
+    assert config.parse_base_branches("main") == ["main"]
+
+
+def test_add_repo_appends_new_repo_config():
+    cfg = config.AppConfig()
+    updated = config.add_repo(cfg, "/tmp/some-repo", ["main"])
+
+    assert len(updated.repos) == 1
+    assert updated.repos[0].repo_path == "/tmp/some-repo"
+    assert updated.repos[0].base_branches == ["main"]
+
+
+def test_add_repo_replaces_existing_entry_not_duplicates():
+    cfg = config.AppConfig(repos=[RepoConfig(repo_path="/tmp/r", base_branches=["main"])])
+
+    updated = config.add_repo(cfg, "/tmp/r", ["main", "develop"])
+
+    assert len(updated.repos) == 1
+    assert updated.repos[0].base_branches == ["main", "develop"]
+
+
+def test_add_repo_does_not_mutate_input_config():
+    cfg = config.AppConfig()
+    config.add_repo(cfg, "/tmp/some-repo", ["main"])
+    assert cfg.repos == []
+
+
+def test_remove_repo_drops_matching_leaves_others_untouched():
+    cfg = config.AppConfig(
+        repos=[
+            RepoConfig(repo_path="/tmp/a", base_branches=["main"]),
+            RepoConfig(repo_path="/tmp/b", base_branches=["main"]),
+        ]
+    )
+
+    updated = config.remove_repo(cfg, "/tmp/a")
+
+    assert [r.repo_path for r in updated.repos] == ["/tmp/b"]
+
+
+def test_remove_repo_absent_path_is_noop():
+    cfg = config.AppConfig(repos=[RepoConfig(repo_path="/tmp/a", base_branches=["main"])])
+
+    updated = config.remove_repo(cfg, "/tmp/nonexistent")
+
+    assert [r.repo_path for r in updated.repos] == ["/tmp/a"]
