@@ -10,15 +10,18 @@ goes through core.*.
 from __future__ import annotations
 
 import datetime
+import os
 import subprocess
 
 import rumps
+from AppKit import NSOpenPanel
 
 from base_branch_watch.app import menu_builder
 from base_branch_watch.core import config, git_ops, log
 from base_branch_watch.core.models import MenuItemSpec, RepoStatus, StatusKind
 
 ADD_REPO_TITLE = "Add Repo…"
+REMOVE_REPO_TITLE = "Remove Repo"
 REFRESH_TITLE = "Refresh Now"
 OPEN_LOG_TITLE = "Open Log"
 QUIT_TITLE = "Quit"
@@ -48,6 +51,7 @@ class BaseBranchWatchApp(rumps.App):
         self._repo_item_keys: dict[str, str] = {}
         self._empty_item: rumps.MenuItem | None = None
         self._checking = False
+        self.remove_menu: rumps.MenuItem | None = None
 
         self._build_menu_shell()
 
@@ -58,14 +62,41 @@ class BaseBranchWatchApp(rumps.App):
     # -- menu construction -------------------------------------------------
 
     def _build_menu_shell(self) -> None:
-        """Build the menu once: repo rows (mutated in place thereafter) + static items."""
-        self._render(list(self.statuses.values()))
+        """Build the menu once: static items first, then initial repo rows / empty state.
+
+        Static items (starting with Add Repo…) must exist in self.menu before the
+        first _render() call — _render()'s empty-state branch inserts relative to
+        ADD_REPO_TITLE via insert_before, which raises KeyError if that item hasn't
+        been added yet (hit on a true first-launch, zero-repo config).
+        """
         self.menu.add(rumps.separator)
         self.menu.add(rumps.MenuItem(ADD_REPO_TITLE, callback=self._add_repo))
+        self.remove_menu = rumps.MenuItem(REMOVE_REPO_TITLE)
+        self.menu.add(self.remove_menu)
+        self._rebuild_remove_submenu()
         self.menu.add(rumps.MenuItem(REFRESH_TITLE, callback=self.check_all))
         self.menu.add(rumps.MenuItem(OPEN_LOG_TITLE, callback=self._open_log))
         self.menu.add(rumps.separator)
         self.menu.add(rumps.MenuItem(QUIT_TITLE, callback=rumps.quit_application))
+        self._render(list(self.statuses.values()))
+
+    def _rebuild_remove_submenu(self) -> None:
+        """Rebuild the Remove Repo submenu's item objects to match cfg.repos.
+
+        This is the sanctioned full-rebuild trigger for a watch-list change
+        (add/remove repo), distinct from the per-cycle in-place title mutation
+        used by _render (Pitfall 10).
+        """
+        # rumps.MenuItem lazily creates its backing NSMenu on first __setitem__;
+        # .clear() dereferences it unconditionally, so guard against the
+        # never-had-an-item case (e.g. first launch with zero repos).
+        if len(self.remove_menu) > 0:
+            self.remove_menu.clear()
+        for repo in self.cfg.repos:
+            name = os.path.basename(repo.repo_path.rstrip("/"))
+            self.remove_menu.add(
+                rumps.MenuItem(name, callback=self._remove_repo_click_handler(repo.repo_path))
+            )
 
     def _render(self, statuses: list[RepoStatus]) -> None:
         """Mutate existing MenuItems in place (Pitfall 10); only add/remove
@@ -110,10 +141,68 @@ class BaseBranchWatchApp(rumps.App):
     # -- static menu actions -------------------------------------------------
 
     def _add_repo(self, _sender) -> None:
-        rumps.alert(
-            title=ADD_REPO_TITLE,
-            message="Add/remove repos is coming in the next slice (Plan 02).",
-        )
+        panel = NSOpenPanel.openPanel()
+        panel.setCanChooseDirectories_(True)
+        panel.setCanChooseFiles_(False)
+        panel.setAllowsMultipleSelection_(False)
+        panel.setPrompt_("Select Repo")
+        result = panel.runModal()
+        if result != 1:
+            return
+        repo_path = panel.URLs()[0].path()
+
+        if not os.path.isdir(os.path.join(repo_path, ".git")):
+            rumps.alert(
+                title="Not a Git Repository",
+                message=f"{repo_path}\n\nChoose a folder that is a git repository.",
+            )
+            return
+
+        repo_name = os.path.basename(repo_path.rstrip("/"))
+        detected = git_ops.detect_default_branch(repo_path)
+
+        resp = rumps.Window(
+            title="Add Repo",
+            message=(
+                f"Base branch(es) to watch for {repo_name} — comma-separated for multiple:"
+            ),
+            default_text=detected or "main",
+            ok="Add",
+            cancel="Cancel",
+        ).run()
+        if not resp.clicked:
+            return
+        raw_text = resp.text.strip()
+        if not raw_text:
+            return
+
+        parsed = config.parse_base_branches(raw_text)
+        if not parsed:
+            return
+
+        self.cfg = config.add_repo(self.cfg, repo_path, parsed)
+        config.save_config(self.cfg)
+        self._rebuild_remove_submenu()
+        self.check_all(None)
+
+    def _remove_repo_click_handler(self, repo_path: str):
+        def handler(_sender):
+            name = os.path.basename(repo_path.rstrip("/"))
+            resp = rumps.alert(
+                title=f"Remove {name}?",
+                message="Stop watching this repo. Nothing on disk or in git history is changed.",
+                ok="Remove",
+                cancel="Cancel",
+            )
+            if resp != 1:
+                return
+            self.cfg = config.remove_repo(self.cfg, repo_path)
+            config.save_config(self.cfg)
+            self.statuses.pop(repo_path, None)
+            self._rebuild_remove_submenu()
+            self._render(list(self.statuses.values()))
+
+        return handler
 
     def _open_log(self, _sender) -> None:
         subprocess.run(["open", "-e", str(log.log_path())], timeout=10)
