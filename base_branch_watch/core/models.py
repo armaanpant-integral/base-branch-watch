@@ -48,6 +48,23 @@ _KIND_SEVERITY = {
     StatusKind.CHECK_FAILED: Severity.BLOCKING,
 }
 
+# Worst-wins ranking used to fold multiple per-base BranchStatus.kind values
+# down to a single "worst branch kind" for a repo. Deliberately NOT the same
+# as StatusKind's raw enum ordinal (e.g. BEHIND=1 < UNPUSHED=2 as declared
+# above) -- this table is the actual severity-ordering source of truth per
+# 01-03-PLAN.md: UP_TO_DATE < UNPUSHED < BEHIND < BEHIND_AND_UNPUSHED <
+# DIVERGED < CONFLICT_RISK(reserved) < CHECK_FAILED.
+_WORST_KIND_RANK = {
+    StatusKind.UP_TO_DATE: 0,
+    StatusKind.UNPUSHED: 1,
+    StatusKind.BEHIND: 2,
+    StatusKind.BEHIND_AND_UNPUSHED: 3,
+    StatusKind.DIVERGED: 4,
+    StatusKind.CONFLICT_RISK: 5,
+    StatusKind.CHECK_FAILED: 6,
+    StatusKind.NOT_CHECKED: -1,
+}
+
 
 @dataclass
 class RepoConfig:
@@ -65,6 +82,10 @@ class BranchStatus:
     behind: int
     ahead_of_base: int
     kind: StatusKind
+    reason: str | None = None
+    """Set when `kind == CHECK_FAILED` (e.g. a per-base fetch failure) - the
+    reason this specific base could not be checked, distinct from a repo-level
+    `RepoStatus.failure_reason` (missing repo dir, no base branches configured)."""
 
 
 @dataclass
@@ -80,11 +101,29 @@ class RepoStatus:
 
     @property
     def worst_kind(self) -> StatusKind:
+        """Fold per-base `branch_statuses` kinds together with the repo-level
+        `unpushed` axis into a single worst-wins StatusKind.
+
+        `unpushed` (ahead of the current branch's own origin) is computed once
+        per repo, not per base -- see `_WORST_KIND_RANK` for the tier order.
+        A per-base DIVERGED/CHECK_FAILED/CONFLICT_RISK always wins outright
+        (already 🔴-tier regardless of unpushed); a per-base BEHIND combines
+        with a nonzero `unpushed` into BEHIND_AND_UNPUSHED; otherwise a
+        nonzero `unpushed` alone yields UNPUSHED.
+        """
         if self.failure_reason is not None:
             return StatusKind.CHECK_FAILED
         if not self.branch_statuses:
             return StatusKind.NOT_CHECKED
-        return max((bs.kind for bs in self.branch_statuses), key=lambda k: _KIND_SEVERITY[k])
+
+        branch_worst = max(
+            (bs.kind for bs in self.branch_statuses), key=lambda k: _WORST_KIND_RANK[k]
+        )
+        if branch_worst in (StatusKind.CHECK_FAILED, StatusKind.DIVERGED, StatusKind.CONFLICT_RISK):
+            return branch_worst
+        if branch_worst == StatusKind.BEHIND:
+            return StatusKind.BEHIND_AND_UNPUSHED if self.unpushed > 0 else StatusKind.BEHIND
+        return StatusKind.UNPUSHED if self.unpushed > 0 else StatusKind.UP_TO_DATE
 
     @property
     def severity(self) -> Severity:

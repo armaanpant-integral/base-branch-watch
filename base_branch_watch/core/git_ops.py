@@ -96,8 +96,32 @@ def behind_ahead(
     return (behind, ahead)
 
 
+def unpushed_count(repo_path: str, timeout: int = 10) -> int:
+    """Count of commits on HEAD not yet on its own upstream (`@{u}`).
+
+    `rev-list --count @{u}..HEAD`. Returns 0 when `@{u}` can't be resolved
+    (no upstream configured for the current branch) - never raises.
+    """
+    try:
+        result = _run_git(repo_path, ["rev-list", "--count", "@{u}..HEAD"], timeout)
+    except (subprocess.TimeoutExpired, OSError):
+        return 0
+    if result.returncode != 0:
+        return 0
+    out = result.stdout.strip()
+    return int(out) if out.isdigit() else 0
+
+
 def check_repo(repo: RepoConfig) -> RepoStatus:
-    """Skeleton version: first base branch only, behind-count only. Never raises."""
+    """Full status: every configured base branch + repo-level unpushed count.
+
+    `unpushed` is computed once per repo (not per base) via `unpushed_count`.
+    Each base is fetched independently with one retry on failure (Pitfall
+    8) - a base whose fetch still fails after the retry gets a distinct
+    CHECK_FAILED BranchStatus (never a bogus behind count), and checking
+    continues for the repo's other bases rather than failing the whole repo.
+    Never raises.
+    """
     name = os.path.basename(repo.repo_path.rstrip("/"))
 
     if not os.path.isdir(os.path.join(repo.repo_path, ".git")):
@@ -120,52 +144,69 @@ def check_repo(repo: RepoConfig) -> RepoStatus:
             failure_reason="no base branches configured",
         )
 
-    base = repo.base_branches[0]
-
-    try:
-        fetch_result = fetch(repo.repo_path, base)
-    except (subprocess.TimeoutExpired, OSError) as exc:
-        return RepoStatus(
-            repo_path=repo.repo_path,
-            name=name,
-            current_branch=None,
-            unpushed=0,
-            branch_statuses=[],
-            failure_reason=str(exc),
-        )
-
-    if not fetch_result.ok:
-        return RepoStatus(
-            repo_path=repo.repo_path,
-            name=name,
-            current_branch=None,
-            unpushed=0,
-            branch_statuses=[],
-            failure_reason="fetch failed — check network/SSH access",
-        )
-
     branch = current_branch(repo.repo_path)
+    unpushed = unpushed_count(repo.repo_path)
 
-    try:
-        behind, _ahead = behind_ahead(repo.repo_path, "HEAD", f"origin/{base}")
-    except (subprocess.TimeoutExpired, OSError) as exc:
-        return RepoStatus(
-            repo_path=repo.repo_path,
-            name=name,
-            current_branch=branch,
-            unpushed=0,
-            branch_statuses=[],
-            failure_reason=str(exc),
+    branch_statuses: list[BranchStatus] = []
+    for base in repo.base_branches:
+        fetch_result = _fetch_with_retry(repo.repo_path, base)
+
+        if not fetch_result.ok:
+            branch_statuses.append(
+                BranchStatus(
+                    base=base,
+                    behind=0,
+                    ahead_of_base=0,
+                    kind=StatusKind.CHECK_FAILED,
+                    reason="fetch failed — check network/SSH access",
+                )
+            )
+            continue
+
+        try:
+            behind, ahead = behind_ahead(repo.repo_path, "HEAD", f"origin/{base}")
+        except (subprocess.TimeoutExpired, OSError):
+            branch_statuses.append(
+                BranchStatus(
+                    base=base,
+                    behind=0,
+                    ahead_of_base=0,
+                    kind=StatusKind.CHECK_FAILED,
+                    reason="fetch failed — check network/SSH access",
+                )
+            )
+            continue
+
+        if behind > 0 and ahead > 0:
+            kind = StatusKind.DIVERGED
+        elif behind > 0:
+            kind = StatusKind.BEHIND
+        else:
+            kind = StatusKind.UP_TO_DATE
+        branch_statuses.append(
+            BranchStatus(base=base, behind=behind, ahead_of_base=ahead, kind=kind)
         )
-
-    kind = StatusKind.UP_TO_DATE if behind == 0 else StatusKind.BEHIND
-    branch_status = BranchStatus(base=base, behind=behind, ahead_of_base=0, kind=kind)
 
     return RepoStatus(
         repo_path=repo.repo_path,
         name=name,
         current_branch=branch,
-        unpushed=0,
-        branch_statuses=[branch_status],
+        unpushed=unpushed,
+        branch_statuses=branch_statuses,
         failure_reason=None,
     )
+
+
+def _fetch_with_retry(repo_path: str, base: str) -> FetchResult:
+    """`fetch` once, retrying a single time on failure (Pitfall 8 - distinguish
+    a transient network blip from a genuinely unreachable remote)."""
+    try:
+        result = fetch(repo_path, base)
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        result = FetchResult(ok=False, error=str(exc))
+    if result.ok:
+        return result
+    try:
+        return fetch(repo_path, base)
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        return FetchResult(ok=False, error=str(exc))
