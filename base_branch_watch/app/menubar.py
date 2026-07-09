@@ -17,26 +17,17 @@ import rumps
 from AppKit import NSOpenPanel
 
 from base_branch_watch.app import menu_builder
-from base_branch_watch.core import config, git_ops, log
-from base_branch_watch.core.models import MenuItemSpec, RepoStatus, StatusKind
+from base_branch_watch.core import config, git_ops, log, state
+from base_branch_watch.core.models import MenuItemSpec, RepoStatus, Severity, StatusKind
+from base_branch_watch.notify.base import Notifier
+from base_branch_watch.notify.osascript_notifier import OsascriptNotifier
+from base_branch_watch.runner import batch
 
 ADD_REPO_TITLE = "Add Repo…"
 REMOVE_REPO_TITLE = "Remove Repo"
 REFRESH_TITLE = "Refresh Now"
 OPEN_LOG_TITLE = "Open Log"
 QUIT_TITLE = "Quit"
-
-
-def _notify(title: str, subtitle: str, body: str) -> None:
-    """Fire one osascript display-notification banner. Quote-escaped per prototype parity."""
-    body = body.replace('"', "'")
-    title = title.replace('"', "'")
-    subtitle = subtitle.replace('"', "'")
-    script = (
-        f'display notification "{body}" with title "{title}" '
-        f'subtitle "{subtitle}" sound name "Glass"'
-    )
-    subprocess.run(["osascript", "-e", script], timeout=10)
 
 
 class BaseBranchWatchApp(rumps.App):
@@ -52,6 +43,8 @@ class BaseBranchWatchApp(rumps.App):
         self._empty_item: rumps.MenuItem | None = None
         self._checking = False
         self.remove_menu: rumps.MenuItem | None = None
+        self._notifier: Notifier = OsascriptNotifier()
+        self._state: state.State = state.load_state()
 
         self._build_menu_shell()
 
@@ -229,6 +222,58 @@ class BaseBranchWatchApp(rumps.App):
 
     # -- polling cycle -------------------------------------------------------
 
+    def _compute_notify_subset(self, statuses: list[RepoStatus]) -> list[RepoStatus]:
+        """Statuses needing attention whose SHA-based dedupe says "notify now".
+
+        Mutates self._state via state.mark_notified for every base whose
+        current SHA is included in the returned subset, so a repeated cycle
+        with an unchanged base SHA does not re-notify (must_have truth).
+        Repo-level or per-base CHECK_FAILED has no SHA to dedupe against, so
+        it always counts as "needs notification" while it keeps failing.
+        """
+        subset: list[RepoStatus] = []
+        for status in statuses:
+            if status.severity == Severity.OK:
+                continue
+
+            if status.failure_reason is not None:
+                subset.append(status)
+                continue
+
+            needs = False
+            base_shas: dict[str, str] = {}
+            for bs in status.branch_statuses:
+                if bs.kind == StatusKind.CHECK_FAILED:
+                    needs = True
+                    continue
+                sha = state.base_head_sha(status.repo_path, bs.base)
+                if sha is None:
+                    continue
+                base_shas[bs.base] = sha
+                if state.should_notify(self._state, status.repo_path, bs.base, sha):
+                    needs = True
+
+            if needs:
+                subset.append(status)
+                for base, sha in base_shas.items():
+                    self._state = state.mark_notified(self._state, status.repo_path, base, sha)
+
+        return subset
+
+    def _log_status_line(self, status: RepoStatus) -> str:
+        if status.failure_reason is not None:
+            return f"[FAIL] {status.name}: {status.failure_reason}"
+        bs = status.worst_branch_status
+        if bs is None or bs.kind == StatusKind.UP_TO_DATE:
+            suffix = "up to date" if status.unpushed == 0 else f"{status.unpushed} unpushed"
+        elif bs.kind == StatusKind.DIVERGED:
+            suffix = f"diverged — {bs.behind} behind, {bs.ahead_of_base} ahead ({bs.base})"
+        elif bs.kind == StatusKind.CHECK_FAILED:
+            suffix = f"check failed — {bs.reason or 'unknown error'} ({bs.base})"
+        else:
+            suffix = f"{bs.behind} behind ({bs.base})"
+        return f"[OK] {status.name}: {suffix}"
+
     def check_all(self, _sender) -> None:
         if self._checking:
             return
@@ -238,38 +283,16 @@ class BaseBranchWatchApp(rumps.App):
             log.rotate_if_needed()
             log.append(f"---- {datetime.datetime.now()} ----")
 
-            newly_behind: list[RepoStatus] = []
-            statuses: list[RepoStatus] = []
-
-            for repo in self.cfg.repos:
-                status = git_ops.check_repo(repo)
-                statuses.append(status)
-
-                if status.failure_reason is not None:
-                    log.append(f"[FAIL] {status.name}: {status.failure_reason}")
-                    continue
-
-                branch_status = status.branch_statuses[0] if status.branch_statuses else None
-                if branch_status is None or branch_status.kind == StatusKind.UP_TO_DATE:
-                    log.append(f"[OK] {status.name}: up to date")
-                else:
-                    log.append(
-                        f"[OK] {status.name}: {branch_status.behind} behind "
-                        f"({branch_status.base})"
-                    )
-                    newly_behind.append(status)
+            statuses = batch.check_all(self.cfg.repos)
+            for status in statuses:
+                log.append(self._log_status_line(status))
 
             self.statuses = {status.repo_path: status for status in statuses}
 
-            if newly_behind:
-                # Skeleton scope: one inline notification, no dedupe/state yet (Plan 04).
-                first = newly_behind[0]
-                bs = first.branch_statuses[0]
-                _notify(
-                    title=f"{first.name}: {bs.base} has {bs.behind} new commit(s)",
-                    subtitle="Base Branch Watch",
-                    body=f"{bs.behind} commits behind {bs.base}",
-                )
+            subset = self._compute_notify_subset(statuses)
+            if subset:
+                self._notifier.send_digest(subset)
+                state.save_state(self._state)
 
             self._render(statuses)
         finally:
