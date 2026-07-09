@@ -5,6 +5,7 @@ No rumps/AppKit import here, ever (core/ is UI-free per ARCH-01).
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from enum import IntEnum
 
@@ -98,6 +99,23 @@ class RepoStatus:
     unpushed: int
     branch_statuses: list[BranchStatus] = field(default_factory=list)
     failure_reason: str | None = None
+
+    @classmethod
+    def failed(cls, repo: RepoConfig, reason: str) -> "RepoStatus":
+        """Build a CHECK_FAILED RepoStatus for a repo whose check raised.
+
+        Used by runner.batch.check_all to isolate a per-repo exception in the
+        thread pool to a single failed status rather than killing the batch.
+        """
+        name = os.path.basename(repo.repo_path.rstrip("/"))
+        return cls(
+            repo_path=repo.repo_path,
+            name=name,
+            current_branch=None,
+            unpushed=0,
+            branch_statuses=[],
+            failure_reason=reason,
+        )
 
     @property
     def worst_kind(self) -> StatusKind:
