@@ -64,6 +64,35 @@ def load_config() -> AppConfig:
     )
 
 
+def parse_base_branches(raw: str) -> list[str]:
+    """Split on ',', strip whitespace, drop empties, dedupe preserving first-seen order."""
+    seen: list[str] = []
+    for part in raw.split(","):
+        stripped = part.strip()
+        if stripped and stripped not in seen:
+            seen.append(stripped)
+    return seen
+
+
+def add_repo(cfg: AppConfig, repo_path: str, base_branches: list[str]) -> AppConfig:
+    """Return a new AppConfig with repo_path's entry replaced (not duplicated) and appended.
+
+    Pure — does not perform I/O. Callers persist the result via save_config.
+    """
+    remaining = [r for r in cfg.repos if r.repo_path != repo_path]
+    remaining.append(RepoConfig(repo_path=repo_path, base_branches=list(base_branches)))
+    return AppConfig(poll_interval_seconds=cfg.poll_interval_seconds, repos=remaining)
+
+
+def remove_repo(cfg: AppConfig, repo_path: str) -> AppConfig:
+    """Return a new AppConfig without repo_path's entry. No-op if the path is absent.
+
+    Pure — does not perform I/O. Callers persist the result via save_config.
+    """
+    remaining = [r for r in cfg.repos if r.repo_path != repo_path]
+    return AppConfig(poll_interval_seconds=cfg.poll_interval_seconds, repos=remaining)
+
+
 def save_config(cfg: AppConfig) -> None:
     """Atomically persist AppConfig: write to a temp file, then os.replace onto the target."""
     directory = config_dir()
