@@ -83,7 +83,7 @@ class BranchStatus:
     ahead_of_base: int
     kind: StatusKind
     reason: str | None = None
-    """Set when `kind == CHECK_FAILED` (e.g. a per-base fetch failure) — the
+    """Set when `kind == CHECK_FAILED` (e.g. a per-base fetch failure) - the
     reason this specific base could not be checked, distinct from a repo-level
     `RepoStatus.failure_reason` (missing repo dir, no base branches configured)."""
 

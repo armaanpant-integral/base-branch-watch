@@ -100,7 +100,7 @@ def unpushed_count(repo_path: str, timeout: int = 10) -> int:
     """Count of commits on HEAD not yet on its own upstream (`@{u}`).
 
     `rev-list --count @{u}..HEAD`. Returns 0 when `@{u}` can't be resolved
-    (no upstream configured for the current branch) — never raises.
+    (no upstream configured for the current branch) - never raises.
     """
     try:
         result = _run_git(repo_path, ["rev-list", "--count", "@{u}..HEAD"], timeout)
@@ -117,7 +117,7 @@ def check_repo(repo: RepoConfig) -> RepoStatus:
 
     `unpushed` is computed once per repo (not per base) via `unpushed_count`.
     Each base is fetched independently with one retry on failure (Pitfall
-    8) — a base whose fetch still fails after the retry gets a distinct
+    8) - a base whose fetch still fails after the retry gets a distinct
     CHECK_FAILED BranchStatus (never a bogus behind count), and checking
     continues for the repo's other bases rather than failing the whole repo.
     Never raises.
@@ -198,7 +198,7 @@ def check_repo(repo: RepoConfig) -> RepoStatus:
 
 
 def _fetch_with_retry(repo_path: str, base: str) -> FetchResult:
-    """`fetch` once, retrying a single time on failure (Pitfall 8 — distinguish
+    """`fetch` once, retrying a single time on failure (Pitfall 8 - distinguish
     a transient network blip from a genuinely unreachable remote)."""
     try:
         result = fetch(repo_path, base)

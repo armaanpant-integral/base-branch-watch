@@ -60,7 +60,7 @@ def _single_base_row(status: RepoStatus) -> MenuItemSpec:
             title = f"🟡 {status.name}: {bs.behind} behind ({bs.base})"
         return MenuItemSpec(title=title, callback_key=status.repo_path)
 
-    # UP_TO_DATE at the branch level — unpushed alone still needs attention.
+    # UP_TO_DATE at the branch level - unpushed alone still needs attention.
     if unpushed > 0:
         return MenuItemSpec(
             title=f"🟡 {status.name}: {unpushed} unpushed", callback_key=status.repo_path
@@ -89,7 +89,7 @@ def _multi_base_row(status: RepoStatus) -> MenuItemSpec:
     if status.unpushed > 0:
         title += f" · {status.unpushed} unpushed"
     children = [_child_row(status, bs) for bs in status.branch_statuses]
-    # Parent has NO callback — a native NSMenu submenu parent only expands;
+    # Parent has NO callback - a native NSMenu submenu parent only expands;
     # attaching a callback would conflict with that.
     return MenuItemSpec(title=title, callback_key=None, children=children)
 
