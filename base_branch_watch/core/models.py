@@ -5,6 +5,7 @@ No rumps/AppKit import here, ever (core/ is UI-free per ARCH-01).
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from enum import IntEnum
 
@@ -99,6 +100,23 @@ class RepoStatus:
     branch_statuses: list[BranchStatus] = field(default_factory=list)
     failure_reason: str | None = None
 
+    @classmethod
+    def failed(cls, repo: RepoConfig, reason: str) -> "RepoStatus":
+        """Build a CHECK_FAILED RepoStatus for a repo whose check raised.
+
+        Used by runner.batch.check_all to isolate a per-repo exception in the
+        thread pool to a single failed status rather than killing the batch.
+        """
+        name = os.path.basename(repo.repo_path.rstrip("/"))
+        return cls(
+            repo_path=repo.repo_path,
+            name=name,
+            current_branch=None,
+            unpushed=0,
+            branch_statuses=[],
+            failure_reason=reason,
+        )
+
     @property
     def worst_kind(self) -> StatusKind:
         """Fold per-base `branch_statuses` kinds together with the repo-level
@@ -124,6 +142,17 @@ class RepoStatus:
         if branch_worst == StatusKind.BEHIND:
             return StatusKind.BEHIND_AND_UNPUSHED if self.unpushed > 0 else StatusKind.BEHIND
         return StatusKind.UNPUSHED if self.unpushed > 0 else StatusKind.UP_TO_DATE
+
+    @property
+    def worst_branch_status(self) -> "BranchStatus | None":
+        """The single BranchStatus with the worst-wins kind (same ranking as
+        `worst_kind`), or None if this repo has no per-base statuses yet.
+        Used by notify/osascript_notifier.py to build a short, single-line
+        status for a repo that may have multiple configured base branches.
+        """
+        if not self.branch_statuses:
+            return None
+        return max(self.branch_statuses, key=lambda bs: _WORST_KIND_RANK[bs.kind])
 
     @property
     def severity(self) -> Severity:

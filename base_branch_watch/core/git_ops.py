@@ -64,6 +64,20 @@ def fetch(repo_path: str, base: str, timeout: int = 15) -> FetchResult:
     return FetchResult(ok=True)
 
 
+def resolve_ref(repo_path: str, ref: str, timeout: int = 10) -> str | None:
+    """`git rev-parse <ref>` — resolve any ref (branch, remote-tracking, etc.)
+    to its current commit SHA. Never raises; returns None on failure/timeout.
+    """
+    try:
+        result = _run_git(repo_path, ["rev-parse", ref], timeout)
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    if result.returncode != 0:
+        return None
+    sha = result.stdout.strip()
+    return sha or None
+
+
 def current_branch(repo_path: str, timeout: int = 10) -> str | None:
     """`git rev-parse --abbrev-ref HEAD`."""
     try:
