@@ -20,6 +20,7 @@ dev = [
 
 [project.scripts]
 bbwatch-app = "base_branch_watch.__main__:main"
+bbwatch = "base_branch_watch.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["base_branch_watch*"]

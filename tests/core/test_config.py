@@ -121,3 +121,37 @@ def test_remove_repo_absent_path_is_noop():
     updated = config.remove_repo(cfg, "/tmp/nonexistent")
 
     assert [r.repo_path for r in updated.repos] == ["/tmp/a"]
+
+
+def test_set_poll_interval_updates_value():
+    cfg = config.AppConfig(poll_interval_seconds=300)
+    updated = config.set_poll_interval(cfg, 600)
+    assert updated.poll_interval_seconds == 600
+
+
+def test_set_poll_interval_clamps_below_floor():
+    cfg = config.AppConfig(poll_interval_seconds=300)
+    updated = config.set_poll_interval(cfg, 5)
+    assert updated.poll_interval_seconds == 30
+
+
+def test_set_poll_interval_coerces_numeric_string():
+    cfg = config.AppConfig(poll_interval_seconds=300)
+    updated = config.set_poll_interval(cfg, "120")
+    assert updated.poll_interval_seconds == 120
+
+
+def test_set_poll_interval_does_not_mutate_input_config():
+    cfg = config.AppConfig(poll_interval_seconds=300)
+    config.set_poll_interval(cfg, 900)
+    assert cfg.poll_interval_seconds == 300
+
+
+def test_load_config_missing_poll_interval_field_defaults_to_300(bbw_config_dir):
+    target = config.config_dir() / config.CONFIG_FILENAME
+    with open(target, "w") as f:
+        json.dump({"repos": []}, f)
+
+    loaded = config.load_config()
+
+    assert loaded.poll_interval_seconds == 300

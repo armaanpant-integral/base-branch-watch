@@ -15,6 +15,7 @@ from pathlib import Path
 from base_branch_watch.core.models import RepoConfig
 
 DEFAULT_POLL_INTERVAL_SECONDS = 300
+MIN_POLL_INTERVAL_SECONDS = 30
 CONFIG_FILENAME = "config.json"
 
 
@@ -91,6 +92,19 @@ def remove_repo(cfg: AppConfig, repo_path: str) -> AppConfig:
     """
     remaining = [r for r in cfg.repos if r.repo_path != repo_path]
     return AppConfig(poll_interval_seconds=cfg.poll_interval_seconds, repos=remaining)
+
+
+def set_poll_interval(cfg: AppConfig, seconds: int | str) -> AppConfig:
+    """Return a new AppConfig with poll_interval_seconds set, clamped to a 30s floor.
+
+    Coerces seconds to int (accepts a numeric string from UI input). Pure —
+    does not perform I/O or mutate cfg. Callers persist via save_config.
+    Raises ValueError if seconds is not coercible to int (caller's job to
+    catch and surface as a user-facing alert, not a crash).
+    """
+    value = int(seconds)
+    clamped = max(value, MIN_POLL_INTERVAL_SECONDS)
+    return AppConfig(poll_interval_seconds=clamped, repos=list(cfg.repos))
 
 
 def save_config(cfg: AppConfig) -> None:
