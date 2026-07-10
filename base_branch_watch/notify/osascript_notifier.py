@@ -91,4 +91,9 @@ class OsascriptNotifier:
             f'display notification "{_escape(body)}" with title "{_escape(title)}" '
             f'subtitle "{_escape(subtitle)}" sound name "Glass"'
         )
-        subprocess.run(["osascript", "-e", script], timeout=10)
+        try:
+            subprocess.run(["osascript", "-e", script], timeout=10)
+        except (subprocess.TimeoutExpired, OSError):
+            # Mirror core/git_ops.py's convention: a hung/missing osascript
+            # binary must never raise out of a timer-driven poll cycle.
+            pass

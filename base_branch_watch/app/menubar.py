@@ -430,6 +430,11 @@ class BaseBranchWatchApp(rumps.App):
                 state.save_state(self._state)
 
             self._render(statuses)
+        except Exception as exc:  # noqa: BLE001 - top-level poll-cycle guard, see CR-04
+            # Never let a single bad cycle kill the whole polling loop (the
+            # "never raises" convention core/git_ops.py established). Log
+            # and swallow; state/title still reset via finally below.
+            log.append(f"[FAIL] check_all cycle raised: {exc!r}")
         finally:
             self._checking = False
             self.title = menu_builder.title_for(list(self.statuses.values()))
