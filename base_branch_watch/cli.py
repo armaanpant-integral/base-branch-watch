@@ -4,6 +4,13 @@ Exposes `bbwatch install-agent` / `bbwatch uninstall-agent` so users don't
 have to remember the script's path — same underlying install/uninstall
 logic, no duplicated shell logic here (ARCHITECTURE.md's cli.py role: a
 third porcelain over the same plumbing, not a second copy of it).
+
+NOTE (WR-03): SCRIPT_PATH is resolved relative to this installed package's
+location, which only has a sibling `scripts/` directory in an editable/
+source install (`pip install -e .` — see INSTALL.md's Prerequisites). A
+non-editable install (`pip install .` from a copied sdist/wheel) will not
+have `scripts/` alongside it; `_run_script` below fails loudly with a
+message explaining this rather than silently misbehaving.
 """
 
 from __future__ import annotations
@@ -18,7 +25,15 @@ SCRIPT_PATH = Path(__file__).resolve().parent.parent / "scripts" / "install-laun
 
 def _run_script(args: list[str]) -> int:
     if not SCRIPT_PATH.exists():
-        print(f"ERROR: install script not found at {SCRIPT_PATH}", file=sys.stderr)
+        print(
+            f"ERROR: install script not found at {SCRIPT_PATH}\n"
+            "`bbwatch install-agent`/`uninstall-agent` require an editable/source "
+            "install (`pip install -e .` from a repo checkout) so `scripts/` ships "
+            "alongside the installed package — a non-editable install does not "
+            "include it. Run scripts/install-launchagent.sh directly from your repo "
+            "checkout instead, or reinstall with `pip install -e .`.",
+            file=sys.stderr,
+        )
         return 1
     result = subprocess.run(["/bin/sh", str(SCRIPT_PATH), *args])
     return result.returncode

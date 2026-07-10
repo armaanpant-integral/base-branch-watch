@@ -86,6 +86,15 @@ bbwatch install-agent [/path/to/python3]
 bbwatch uninstall-agent
 ```
 
+**Requires an editable/source install** (`pip install -e .` from a repo
+checkout, as above). `bbwatch` locates `scripts/install-launchagent.sh`
+relative to the installed `base_branch_watch` package, which is only present
+alongside it in an editable install — a non-editable install (e.g. `pip
+install .` from a copied sdist/wheel elsewhere on disk) will not have
+`scripts/` available, and `bbwatch install-agent`/`uninstall-agent` will
+fail with a clear error. In that case, run
+`scripts/install-launchagent.sh` directly from a repo checkout instead.
+
 ## KeepAlive vs. Quit — important caveat
 
 `KeepAlive: true` means launchd respawns the process whenever it exits —
