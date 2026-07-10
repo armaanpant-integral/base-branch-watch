@@ -365,6 +365,11 @@ class BaseBranchWatchApp(rumps.App):
         with an unchanged base SHA does not re-notify (must_have truth).
         Repo-level or per-base CHECK_FAILED has no SHA to dedupe against, so
         it always counts as "needs notification" while it keeps failing.
+
+        The unpushed-commit-count axis (status.unpushed) is deduped
+        independently of base SHAs (WR-01) — a repo whose worst status is
+        UNPUSHED-only re-notifies whenever the unpushed count itself changes,
+        even if every base's SHA is unchanged.
         """
         subset: list[RepoStatus] = []
         for status in statuses:
@@ -388,10 +393,20 @@ class BaseBranchWatchApp(rumps.App):
                 if state.should_notify(self._state, status.repo_path, bs.base, sha):
                     needs = True
 
+            if status.unpushed > 0:
+                if state.should_notify_unpushed(self._state, status.repo_path, status.unpushed):
+                    needs = True
+            else:
+                self._state = state.clear_notified_unpushed(self._state, status.repo_path)
+
             if needs:
                 subset.append(status)
                 for base, sha in base_shas.items():
                     self._state = state.mark_notified(self._state, status.repo_path, base, sha)
+                if status.unpushed > 0:
+                    self._state = state.mark_notified_unpushed(
+                        self._state, status.repo_path, status.unpushed
+                    )
 
         return subset
 

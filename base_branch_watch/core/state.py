@@ -20,6 +20,11 @@ STATE_FILENAME = "state.json"
 # {repo_path: {base: last_notified_sha}}
 State = dict[str, dict[str, str]]
 
+# Reserved per-repo key for the last-notified unpushed count (WR-01). A NUL
+# byte can never appear in a git ref/branch name, so this key can never
+# collide with a real configured base branch.
+UNPUSHED_KEY = "\x00unpushed"
+
 
 def _state_path() -> Path:
     return config_dir() / STATE_FILENAME
@@ -67,4 +72,34 @@ def mark_notified(state: State, repo_path: str, base: str, current_sha: str) -> 
     """Record current_sha as the last-notified SHA for this (repo, base). Returns state."""
     repo_state = state.setdefault(repo_path, {})
     repo_state[base] = current_sha
+    return state
+
+
+def should_notify_unpushed(state: State, repo_path: str, unpushed: int) -> bool:
+    """True unless unpushed already matches the last-notified unpushed count.
+
+    Dedupe for the base-SHA axis (should_notify above) is blind to the
+    unpushed-commit-count axis entirely (WR-01) — a repo whose worst status
+    is UNPUSHED-only (all bases UP_TO_DATE) never re-fires as the local
+    unpushed count grows, since nothing in that path is SHA-based. This
+    tracks that axis independently.
+    """
+    last = state.get(repo_path, {}).get(UNPUSHED_KEY)
+    return last != str(unpushed)
+
+
+def mark_notified_unpushed(state: State, repo_path: str, unpushed: int) -> State:
+    """Record unpushed as the last-notified unpushed count for repo_path."""
+    repo_state = state.setdefault(repo_path, {})
+    repo_state[UNPUSHED_KEY] = str(unpushed)
+    return state
+
+
+def clear_notified_unpushed(state: State, repo_path: str) -> State:
+    """Drop any stored last-notified unpushed count for repo_path.
+
+    Called when unpushed returns to 0 so a future nonzero count re-triggers
+    a notification even if it happens to match a previously-notified value.
+    """
+    state.get(repo_path, {}).pop(UNPUSHED_KEY, None)
     return state
