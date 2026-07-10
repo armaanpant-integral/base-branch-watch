@@ -93,12 +93,18 @@ def current_branch(repo_path: str, timeout: int = 10) -> str | None:
 def behind_ahead(
     repo_path: str, left_ref: str, right_ref: str, timeout: int = 10
 ) -> tuple[int, int]:
-    """(behind, ahead) of left_ref relative to right_ref via rev-list --left-right --count."""
-    result = _run_git(
-        repo_path,
-        ["rev-list", "--left-right", "--count", f"{left_ref}...{right_ref}"],
-        timeout,
-    )
+    """(behind, ahead) of left_ref relative to right_ref via rev-list --left-right --count.
+
+    Never raises — mirrors every sibling function in this module.
+    """
+    try:
+        result = _run_git(
+            repo_path,
+            ["rev-list", "--left-right", "--count", f"{left_ref}...{right_ref}"],
+            timeout,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return (0, 0)
     if result.returncode != 0:
         return (0, 0)
     parts = result.stdout.strip().split()
