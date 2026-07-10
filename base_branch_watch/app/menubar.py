@@ -14,7 +14,7 @@ import os
 import subprocess
 
 import rumps
-from AppKit import NSApplication, NSOpenPanel
+from AppKit import NSAlert, NSApplication, NSOpenPanel, NSWindowCollectionBehaviorCanJoinAllSpaces
 
 from base_branch_watch.app import menu_builder
 from base_branch_watch.core import config, git_ops, log, state
@@ -225,12 +225,30 @@ class BaseBranchWatchApp(rumps.App):
 
     @staticmethod
     def _activate() -> None:
-        """Bring the app frontmost on the CURRENT active Space before showing
-        any dialog (NSOpenPanel/rumps.Window/rumps.alert). Without this, a
-        background LSUIElement app's modal windows can appear on whatever
-        Space the app last belonged to instead of wherever the user actually
-        is, forcing them to switch Spaces to find it."""
+        """Bring the app frontmost before showing any dialog. Necessary but
+        NOT sufficient for rumps.alert — see _show_alert."""
         NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
+
+    @staticmethod
+    def _show_alert(title: str, message: str, ok: str = "OK", cancel: str | None = None) -> int:
+        """Direct NSAlert construction instead of rumps.alert, so the window's
+        collectionBehavior can be forced to join the user's CURRENT macOS
+        Space. activateIgnoringOtherApps_ alone brings the app forward but
+        does NOT move an already-placed window onto the active Space — a
+        background LSUIElement app's alert otherwise pops up on whatever
+        Space it last belonged to, forcing a manual Space switch to see it.
+        Returns 1 if `ok` was clicked (matches rumps.alert's convention used
+        by this file's existing `!= 1` checks), 0 otherwise."""
+        NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
+        alert = NSAlert.alloc().init()
+        alert.setMessageText_(title)
+        alert.setInformativeText_(message)
+        alert.addButtonWithTitle_(ok)
+        if cancel:
+            alert.addButtonWithTitle_(cancel)
+        alert.window().setCollectionBehavior_(NSWindowCollectionBehaviorCanJoinAllSpaces)
+        response = alert.runModal()
+        return 1 if response == 1000 else 0
 
     def _add_repo(self, _sender) -> None:
         self._activate()
@@ -245,7 +263,7 @@ class BaseBranchWatchApp(rumps.App):
         repo_path = panel.URLs()[0].path()
 
         if not os.path.isdir(os.path.join(repo_path, ".git")):
-            rumps.alert(
+            self._show_alert(
                 title="Not a Git Repository",
                 message=f"{repo_path}\n\nChoose a folder that is a git repository.",
             )
@@ -283,7 +301,7 @@ class BaseBranchWatchApp(rumps.App):
         def handler(_sender):
             self._activate()
             name = os.path.basename(repo_path.rstrip("/"))
-            resp = rumps.alert(
+            resp = self._show_alert(
                 title=f"Remove {name}?",
                 message="Stop watching this repo. Nothing on disk or in git history is changed.",
                 ok="Remove",
@@ -347,7 +365,7 @@ class BaseBranchWatchApp(rumps.App):
         try:
             self.cfg = config.set_poll_interval(self.cfg, raw_text)
         except ValueError:
-            rumps.alert(title="Invalid Interval", message=f"{raw_text!r} is not a number.")
+            self._show_alert(title="Invalid Interval", message=f"{raw_text!r} is not a number.")
             return
         config.save_config(self.cfg)
         # Live-update: stop the existing Timer and start a new one at the new
@@ -361,20 +379,20 @@ class BaseBranchWatchApp(rumps.App):
             self._activate()
             status = self.statuses.get(repo_path)
             if status is None:
-                rumps.alert(title=repo_path, message="Not checked yet.")
+                self._show_alert(title=repo_path, message="Not checked yet.")
                 return
             if status.failure_reason:
-                rumps.alert(title=status.name, message=status.failure_reason)
+                self._show_alert(title=status.name, message=status.failure_reason)
                 return
             branch_status = status.worst_branch_status
             if branch_status is None:
-                rumps.alert(title=status.name, message="Up to date.")
+                self._show_alert(title=status.name, message="Up to date.")
             elif branch_status.kind == StatusKind.CHECK_FAILED:
-                rumps.alert(
+                self._show_alert(
                     title=status.name, message=branch_status.reason or "unknown error"
                 )
             elif branch_status.kind == StatusKind.DIVERGED:
-                rumps.alert(
+                self._show_alert(
                     title=status.name,
                     message=(
                         f"Diverged — {branch_status.behind} behind, "
@@ -382,9 +400,9 @@ class BaseBranchWatchApp(rumps.App):
                     ),
                 )
             elif branch_status.behind == 0:
-                rumps.alert(title=status.name, message="Up to date.")
+                self._show_alert(title=status.name, message="Up to date.")
             else:
-                rumps.alert(
+                self._show_alert(
                     title=status.name,
                     message=f"{branch_status.behind} commits behind ({branch_status.base}).",
                 )
@@ -400,23 +418,23 @@ class BaseBranchWatchApp(rumps.App):
             self._activate()
             status = self.statuses.get(repo_path)
             if status is None:
-                rumps.alert(title=repo_path, message="Not checked yet.")
+                self._show_alert(title=repo_path, message="Not checked yet.")
                 return
             bs = next((b for b in status.branch_statuses if b.base == base), None)
             title = f"{status.name} ({base})"
             if bs is None:
-                rumps.alert(title=title, message="Not checked yet.")
+                self._show_alert(title=title, message="Not checked yet.")
             elif bs.kind == StatusKind.CHECK_FAILED:
-                rumps.alert(title=title, message=bs.reason or "unknown error")
+                self._show_alert(title=title, message=bs.reason or "unknown error")
             elif bs.kind == StatusKind.DIVERGED:
-                rumps.alert(
+                self._show_alert(
                     title=title,
                     message=f"Diverged — {bs.behind} behind, {bs.ahead_of_base} ahead.",
                 )
             elif bs.behind == 0:
-                rumps.alert(title=title, message="Up to date.")
+                self._show_alert(title=title, message="Up to date.")
             else:
-                rumps.alert(title=title, message=f"{bs.behind} commits behind.")
+                self._show_alert(title=title, message=f"{bs.behind} commits behind.")
 
         return handler
 

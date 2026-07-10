@@ -25,15 +25,17 @@ def _configure(app, status: RepoStatus) -> None:
 
 
 def _capture_alert(monkeypatch) -> dict:
-    """Monkeypatch rumps.alert to capture (title, message) instead of
-    popping a real dialog; returns the dict alerts get recorded into."""
+    """Monkeypatch BaseBranchWatchApp._show_alert (not rumps.alert — the app
+    builds NSAlert directly now, see menubar._show_alert) to capture
+    (title, message) instead of popping a real, blocking dialog."""
     captured: dict = {}
 
-    def fake_alert(title, message):
+    def fake_show_alert(title, message, ok="OK", cancel=None):
         captured["title"] = title
         captured["message"] = message
+        return 1
 
-    monkeypatch.setattr(rumps, "alert", fake_alert)
+    monkeypatch.setattr(menubar.BaseBranchWatchApp, "_show_alert", staticmethod(fake_show_alert))
     return captured
 
 
