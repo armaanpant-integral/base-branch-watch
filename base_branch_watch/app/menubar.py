@@ -14,7 +14,7 @@ import os
 import subprocess
 
 import rumps
-from AppKit import NSOpenPanel
+from AppKit import NSApplication, NSOpenPanel
 
 from base_branch_watch.app import menu_builder
 from base_branch_watch.core import config, git_ops, log, state
@@ -25,6 +25,7 @@ from base_branch_watch.runner import batch
 
 ADD_REPO_TITLE = "Add Repo…"
 REMOVE_REPO_TITLE = "Remove Repo"
+EDIT_BASE_TITLE = "Edit Base Branch(es)"
 SET_INTERVAL_TITLE = "Set Interval…"
 REFRESH_TITLE = "Refresh Now"
 OPEN_LOG_TITLE = "Open Log"
@@ -49,6 +50,7 @@ class BaseBranchWatchApp(rumps.App):
         self._empty_item: rumps.MenuItem | None = None
         self._checking = False
         self.remove_menu: rumps.MenuItem | None = None
+        self.edit_menu: rumps.MenuItem | None = None
         self._notifier: Notifier = OsascriptNotifier()
         self._state: state.State = state.load_state()
 
@@ -73,6 +75,9 @@ class BaseBranchWatchApp(rumps.App):
         self.remove_menu = rumps.MenuItem(REMOVE_REPO_TITLE)
         self.menu.add(self.remove_menu)
         self._rebuild_remove_submenu()
+        self.edit_menu = rumps.MenuItem(EDIT_BASE_TITLE)
+        self.menu.add(self.edit_menu)
+        self._rebuild_edit_submenu()
         self.menu.add(rumps.MenuItem(SET_INTERVAL_TITLE, callback=self._set_interval))
         self.menu.add(rumps.MenuItem(REFRESH_TITLE, callback=self.check_all))
         self.menu.add(rumps.MenuItem(OPEN_LOG_TITLE, callback=self._open_log))
@@ -96,6 +101,21 @@ class BaseBranchWatchApp(rumps.App):
             name = os.path.basename(repo.repo_path.rstrip("/"))
             self.remove_menu.add(
                 rumps.MenuItem(name, callback=self._remove_repo_click_handler(repo.repo_path))
+            )
+
+    def _rebuild_edit_submenu(self) -> None:
+        """Rebuild the Edit Base Branch(es) submenu's item objects to match
+        cfg.repos — same full-rebuild-on-watch-list-change discipline as
+        _rebuild_remove_submenu (a watch-list change, not a per-cycle status
+        refresh, so Pitfall 10's in-place-mutation rule doesn't apply here)."""
+        if len(self.edit_menu) > 0:
+            self.edit_menu.clear()
+        for repo in self.cfg.repos:
+            name = os.path.basename(repo.repo_path.rstrip("/"))
+            self.edit_menu.add(
+                rumps.MenuItem(
+                    name, callback=self._edit_base_branches_click_handler(repo.repo_path)
+                )
             )
 
     def _render(self, statuses: list[RepoStatus]) -> None:
@@ -203,7 +223,17 @@ class BaseBranchWatchApp(rumps.App):
 
     # -- static menu actions -------------------------------------------------
 
+    @staticmethod
+    def _activate() -> None:
+        """Bring the app frontmost on the CURRENT active Space before showing
+        any dialog (NSOpenPanel/rumps.Window/rumps.alert). Without this, a
+        background LSUIElement app's modal windows can appear on whatever
+        Space the app last belonged to instead of wherever the user actually
+        is, forcing them to switch Spaces to find it."""
+        NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
+
     def _add_repo(self, _sender) -> None:
+        self._activate()
         panel = NSOpenPanel.openPanel()
         panel.setCanChooseDirectories_(True)
         panel.setCanChooseFiles_(False)
@@ -246,10 +276,12 @@ class BaseBranchWatchApp(rumps.App):
         self.cfg = config.add_repo(self.cfg, repo_path, parsed)
         config.save_config(self.cfg)
         self._rebuild_remove_submenu()
+        self._rebuild_edit_submenu()
         self.check_all(None)
 
     def _remove_repo_click_handler(self, repo_path: str):
         def handler(_sender):
+            self._activate()
             name = os.path.basename(repo_path.rstrip("/"))
             resp = rumps.alert(
                 title=f"Remove {name}?",
@@ -263,7 +295,37 @@ class BaseBranchWatchApp(rumps.App):
             config.save_config(self.cfg)
             self.statuses.pop(repo_path, None)
             self._rebuild_remove_submenu()
+            self._rebuild_edit_submenu()
             self._render(list(self.statuses.values()))
+
+        return handler
+
+    def _edit_base_branches_click_handler(self, repo_path: str):
+        """Change an already-watched repo's base branch(es) without going
+        through Remove + re-Add. Reuses config.add_repo's replace-not-
+        duplicate semantics — editing IS adding with the same repo_path."""
+
+        def handler(_sender):
+            self._activate()
+            name = os.path.basename(repo_path.rstrip("/"))
+            current = next((r for r in self.cfg.repos if r.repo_path == repo_path), None)
+            if current is None:
+                return
+            resp = rumps.Window(
+                title="Edit Base Branch(es)",
+                message=f"Base branch(es) to watch for {name} — comma-separated for multiple:",
+                default_text=", ".join(current.base_branches),
+                ok="Save",
+                cancel="Cancel",
+            ).run()
+            if not resp.clicked:
+                return
+            parsed = config.parse_base_branches(resp.text.strip())
+            if not parsed:
+                return
+            self.cfg = config.add_repo(self.cfg, repo_path, parsed)
+            config.save_config(self.cfg)
+            self.check_all(None)
 
         return handler
 
@@ -271,6 +333,7 @@ class BaseBranchWatchApp(rumps.App):
         subprocess.run(["open", "-e", str(log.log_path())], timeout=10)
 
     def _set_interval(self, _sender) -> None:
+        self._activate()
         resp = rumps.Window(
             title="Set Interval",
             message="Polling interval in seconds (minimum 30):",
@@ -295,6 +358,7 @@ class BaseBranchWatchApp(rumps.App):
 
     def _repo_click_handler(self, repo_path: str):
         def handler(_sender):
+            self._activate()
             status = self.statuses.get(repo_path)
             if status is None:
                 rumps.alert(title=repo_path, message="Not checked yet.")
@@ -333,6 +397,7 @@ class BaseBranchWatchApp(rumps.App):
         repo's worst status."""
 
         def handler(_sender):
+            self._activate()
             status = self.statuses.get(repo_path)
             if status is None:
                 rumps.alert(title=repo_path, message="Not checked yet.")

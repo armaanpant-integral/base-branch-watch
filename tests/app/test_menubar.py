@@ -182,6 +182,37 @@ def test_repo_click_handler_multi_base_uses_worst_branch_not_first(app, monkeypa
     assert captured["message"] != "Up to date."
 
 
+def test_edit_base_branches_replaces_existing_bases_without_duplicate_entry(app, monkeypatch):
+    app.cfg.repos = [RepoConfig(repo_path="/tmp/myrepo", base_branches=["main"])]
+
+    class FakeResp:
+        clicked = True
+        text = "main, release"
+
+    fake_window = type("W", (), {"run": lambda self: FakeResp()})
+    monkeypatch.setattr(rumps, "Window", lambda **kwargs: fake_window())
+
+    app._edit_base_branches_click_handler("/tmp/myrepo")(None)
+
+    assert len(app.cfg.repos) == 1, "must replace, not duplicate, the repo entry"
+    assert app.cfg.repos[0].base_branches == ["main", "release"]
+
+
+def test_edit_base_branches_cancel_leaves_config_untouched(app, monkeypatch):
+    app.cfg.repos = [RepoConfig(repo_path="/tmp/myrepo", base_branches=["main"])]
+
+    class FakeResp:
+        clicked = False
+        text = ""
+
+    fake_window = type("W", (), {"run": lambda self: FakeResp()})
+    monkeypatch.setattr(rumps, "Window", lambda **kwargs: fake_window())
+
+    app._edit_base_branches_click_handler("/tmp/myrepo")(None)
+
+    assert app.cfg.repos[0].base_branches == ["main"]
+
+
 def test_child_click_handler_reports_specific_base_status(app, monkeypatch):
     status = _multi_base_status("myrepo")
     app.statuses = {status.repo_path: status}
