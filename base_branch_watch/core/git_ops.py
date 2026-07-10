@@ -121,6 +121,108 @@ def behind_ahead(
     return (behind, ahead)
 
 
+def merge_base(repo_path: str, left: str, right: str, timeout: int = 10) -> str | None:
+    """`git merge-base left right`. Never raises. Returns None on failure —
+    exit 128 (unresolvable ref, e.g. empty repo/no commits) and exit 1
+    (no common ancestor, e.g. rewritten/unrelated history) both collapse to
+    None; only exit 0 with a SHA on stdout counts as success.
+    """
+    try:
+        result = _run_git(repo_path, ["merge-base", left, right], timeout)
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    if result.returncode != 0:
+        return None
+    sha = result.stdout.strip()
+    return sha or None
+
+
+def _parse_name_status_z(raw: str) -> set[str]:
+    """Parse `git diff --name-status -z` output into a flat path set.
+
+    Rename/copy (`R`/`C`) records carry TWO path fields (old, new for `git
+    diff --name-status -z`); both are added to the set so a local edit to a
+    file's pre-rename name still overlap-matches an incoming rename of that
+    same file (see 02-RESEARCH.md Pattern 2 / Pitfall 1).
+    """
+    tokens = raw.split("\0")
+    paths: set[str] = set()
+    i = 0
+    while i < len(tokens):
+        status = tokens[i]
+        if not status:
+            i += 1
+            continue
+        if status[0] in ("R", "C"):
+            paths.add(tokens[i + 1])
+            paths.add(tokens[i + 2])
+            i += 3
+        else:
+            paths.add(tokens[i + 1])
+            i += 2
+    return paths
+
+
+def working_tree_paths(repo_path: str, timeout: int = 10) -> set[str] | None:
+    """Union of tracked-and-changed paths (staged + unstaged vs HEAD) and
+    untracked non-ignored paths. Base-independent (D-01 working-tree half +
+    D-02 untracked) — compute once per repo, not per base.
+
+    Returns None only on subprocess timeout/OSError for either half. A
+    nonzero returncode on the diff half (e.g. unborn HEAD) collapses to an
+    empty set for that half, not None — mirrors behind_ahead's distinction
+    between "couldn't determine" and "confirmed empty."
+    """
+    try:
+        diff_result = _run_git(repo_path, ["diff", "--name-status", "-z", "HEAD"], timeout)
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    changed = _parse_name_status_z(diff_result.stdout) if diff_result.returncode == 0 else set()
+
+    try:
+        untracked_result = _run_git(
+            repo_path, ["ls-files", "--others", "--exclude-standard", "-z"], timeout
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    if untracked_result.returncode != 0:
+        untracked: set[str] = set()
+    else:
+        untracked = {p for p in untracked_result.stdout.split("\0") if p}
+
+    return changed | untracked
+
+
+def branch_unique_paths(repo_path: str, mb: str, timeout: int = 10) -> set[str] | None:
+    """Paths changed between `mb` (merge-base) and HEAD — D-01's branch-unique
+    half, base-dependent. None on subprocess failure or nonzero returncode."""
+    try:
+        result = _run_git(repo_path, ["diff", "--name-status", "-z", mb, "HEAD"], timeout)
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    if result.returncode != 0:
+        return None
+    return _parse_name_status_z(result.stdout)
+
+
+def incoming_changed_paths(
+    repo_path: str, mb: str, base: str, timeout: int = 10
+) -> set[str] | None:
+    """Paths changed between `mb` (merge-base) and `origin/<base>` — D-03's
+    incoming window. Uses `--name-status -z` in place of D-03's literal
+    `--name-only` (02-RESEARCH.md Pattern 2): same ref range, same intent,
+    rename/unicode-correct. Never a merge command (D-05). None on failure."""
+    try:
+        result = _run_git(
+            repo_path, ["diff", "--name-status", "-z", mb, f"origin/{base}"], timeout
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    if result.returncode != 0:
+        return None
+    return _parse_name_status_z(result.stdout)
+
+
 def unpushed_count(repo_path: str, timeout: int = 10) -> int:
     """Count of commits on HEAD not yet on its own upstream (`@{u}`).
 
@@ -171,6 +273,10 @@ def check_repo(repo: RepoConfig) -> RepoStatus:
 
     branch = current_branch(repo.repo_path)
     unpushed = unpushed_count(repo.repo_path)
+    # Base-independent half of D-01/D-02's local-change set (working-tree
+    # diff + untracked files) — computed once per repo, mirroring how
+    # `unpushed` is hoisted above the per-base loop (02-PATTERNS.md).
+    local_wt = working_tree_paths(repo.repo_path)
 
     branch_statuses: list[BranchStatus] = []
     for base in repo.base_branches:
@@ -204,6 +310,46 @@ def check_repo(repo: RepoConfig) -> RepoStatus:
                 )
             )
             continue
+
+        if behind > 0:
+            # Conflict-risk overlap check (CONFLICT-01) — only worth computing
+            # when there's an incoming range to compare against at all.
+            mb = merge_base(repo.repo_path, "HEAD", f"origin/{base}")
+            incoming = (
+                incoming_changed_paths(repo.repo_path, mb, base) if mb is not None else None
+            )
+            branch_unique = (
+                branch_unique_paths(repo.repo_path, mb) if mb is not None else None
+            )
+            if (
+                mb is None
+                or local_wt is None
+                or incoming is None
+                or branch_unique is None
+            ):
+                branch_statuses.append(
+                    BranchStatus(
+                        base=base,
+                        behind=0,
+                        ahead_of_base=0,
+                        kind=StatusKind.CHECK_FAILED,
+                        reason="conflict check failed — local git error",
+                    )
+                )
+                continue
+            local = local_wt | branch_unique
+            overlap = incoming & local
+            if overlap:
+                branch_statuses.append(
+                    BranchStatus(
+                        base=base,
+                        behind=behind,
+                        ahead_of_base=ahead,
+                        kind=StatusKind.CONFLICT_RISK,
+                        conflict_paths=sorted(overlap),
+                    )
+                )
+                continue
 
         if behind > 0 and ahead > 0:
             kind = StatusKind.DIVERGED

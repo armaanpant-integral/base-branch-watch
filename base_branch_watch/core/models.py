@@ -87,6 +87,9 @@ class BranchStatus:
     """Set when `kind == CHECK_FAILED` (e.g. a per-base fetch failure) - the
     reason this specific base could not be checked, distinct from a repo-level
     `RepoStatus.failure_reason` (missing repo dir, no base branches configured)."""
+    conflict_paths: list[str] = field(default_factory=list)
+    """Set when `kind == CONFLICT_RISK` — sorted, deterministic list of file
+    paths that overlap between local changes and the incoming base range."""
 
 
 @dataclass

@@ -99,9 +99,13 @@ def _clone_from(origin_dir: Path, clone_dir: Path, tmp_path: Path) -> None:
 def fixture_repos_diverged(tmp_path, default_branch_name):
     """Clone with a local unique commit AND origin independently advanced -> diverged.
 
-    Both sides add a commit on top of the same shared ancestor with unrelated
-    content, so the clone's HEAD is both behind (origin has a commit it lacks)
-    and ahead (it has a commit origin lacks) of origin/<base>.
+    Both sides add a commit on top of the same shared ancestor touching
+    DIFFERENT paths (clone_only.txt vs file.txt), so the clone's HEAD is both
+    behind (origin has a commit it lacks) and ahead (it has a commit origin
+    lacks) of origin/<base>, with zero file-path overlap -- this fixture
+    tests pure DIVERGED status calculation, distinct from the conflict-risk
+    overlap fixtures (fixture_repos_conflict_overlap /
+    fixture_repos_behind_no_overlap) which deliberately touch the same path.
     """
     origin_dir = tmp_path / "origin"
     _init_origin(origin_dir, default_branch_name)
@@ -109,8 +113,8 @@ def fixture_repos_diverged(tmp_path, default_branch_name):
     clone_dir = tmp_path / "clone"
     _clone_from(origin_dir, clone_dir, tmp_path)
 
-    (clone_dir / "file.txt").write_text("local diverged change\n")
-    _run(["add", "file.txt"], clone_dir)
+    (clone_dir / "clone_only.txt").write_text("local diverged change\n")
+    _run(["add", "clone_only.txt"], clone_dir)
     _run(["commit", "-m", "local diverged commit"], clone_dir)
 
     (origin_dir / "file.txt").write_text("origin advanced change\n")
@@ -206,7 +210,9 @@ def fixture_repos_multi_base(tmp_path, default_branch_name):
     "release" is branched from the same initial commit and never advances, so
     the clone's one local commit only makes it ahead of "release" (not flagged
     without a corresponding behind). The default branch independently advances
-    on origin AND the clone has its own local commit -> diverged.
+    on origin AND the clone has its own local commit -> diverged. The two
+    sides touch DIFFERENT paths (clone_only.txt vs file.txt) so this fixture
+    exercises pure DIVERGED status, not conflict-risk overlap.
     """
     origin_dir = tmp_path / "origin"
     _init_origin(origin_dir, default_branch_name)
@@ -215,8 +221,8 @@ def fixture_repos_multi_base(tmp_path, default_branch_name):
     clone_dir = tmp_path / "clone"
     _clone_from(origin_dir, clone_dir, tmp_path)
 
-    (clone_dir / "file.txt").write_text("clone diverged change\n")
-    _run(["add", "file.txt"], clone_dir)
+    (clone_dir / "clone_only.txt").write_text("clone diverged change\n")
+    _run(["add", "clone_only.txt"], clone_dir)
     _run(["commit", "-m", "clone diverged commit"], clone_dir)
 
     (origin_dir / "file.txt").write_text("origin advanced change\n")
