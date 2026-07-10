@@ -25,6 +25,7 @@ from base_branch_watch.runner import batch
 
 ADD_REPO_TITLE = "Add Repo…"
 REMOVE_REPO_TITLE = "Remove Repo"
+SET_INTERVAL_TITLE = "Set Interval…"
 REFRESH_TITLE = "Refresh Now"
 OPEN_LOG_TITLE = "Open Log"
 QUIT_TITLE = "Quit"
@@ -67,6 +68,7 @@ class BaseBranchWatchApp(rumps.App):
         self.remove_menu = rumps.MenuItem(REMOVE_REPO_TITLE)
         self.menu.add(self.remove_menu)
         self._rebuild_remove_submenu()
+        self.menu.add(rumps.MenuItem(SET_INTERVAL_TITLE, callback=self._set_interval))
         self.menu.add(rumps.MenuItem(REFRESH_TITLE, callback=self.check_all))
         self.menu.add(rumps.MenuItem(OPEN_LOG_TITLE, callback=self._open_log))
         self.menu.add(rumps.separator)
@@ -199,6 +201,29 @@ class BaseBranchWatchApp(rumps.App):
 
     def _open_log(self, _sender) -> None:
         subprocess.run(["open", "-e", str(log.log_path())], timeout=10)
+
+    def _set_interval(self, _sender) -> None:
+        resp = rumps.Window(
+            title="Set Interval",
+            message="Polling interval in seconds (minimum 30):",
+            default_text=str(self.cfg.poll_interval_seconds),
+            ok="Save",
+            cancel="Cancel",
+        ).run()
+        if not resp.clicked:
+            return
+        raw_text = resp.text.strip()
+        try:
+            self.cfg = config.set_poll_interval(self.cfg, raw_text)
+        except ValueError:
+            rumps.alert(title="Invalid Interval", message=f"{raw_text!r} is not a number.")
+            return
+        config.save_config(self.cfg)
+        # Live-update: stop the existing Timer and start a new one at the new
+        # interval so the change takes effect without an app relaunch.
+        self.timer.stop()
+        self.timer = rumps.Timer(self.check_all, self.cfg.poll_interval_seconds)
+        self.timer.start()
 
     def _repo_click_handler(self, repo_path: str):
         def handler(_sender):
