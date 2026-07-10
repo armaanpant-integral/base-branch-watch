@@ -294,6 +294,55 @@ def fixture_repos_behind_no_overlap(tmp_path, default_branch_name):
 
 
 @pytest.fixture()
+def fixture_repos_incoming_rename(tmp_path, default_branch_name):
+    """Origin renames file.txt -> renamed.txt while the clone has a
+    branch-unique commit editing the OLD file.txt -- regression fixture for
+    02-RESEARCH.md Pitfall 1: a naive `--name-only` parse drops the old path
+    of a rename and would silently miss this conflict shape; `--name-status
+    -z` (adding both R-record paths, see `_parse_name_status_z`) closes it.
+    """
+    origin_dir = tmp_path / "origin"
+    _init_origin(origin_dir, default_branch_name)
+
+    clone_dir = tmp_path / "clone"
+    _clone_from(origin_dir, clone_dir, tmp_path)
+
+    (clone_dir / "file.txt").write_text("clone edits file.txt under its old name\n")
+    _run(["add", "file.txt"], clone_dir)
+    _run(["commit", "-m", "clone edits file.txt under its old name"], clone_dir)
+
+    _run(["mv", "file.txt", "renamed.txt"], origin_dir)
+    _run(["commit", "-m", "origin renames file.txt to renamed.txt"], origin_dir)
+
+    return str(origin_dir), str(clone_dir)
+
+
+@pytest.fixture()
+def fixture_repos_no_common_ancestor(tmp_path, default_branch_name):
+    """Origin's base branch is rebuilt as an orphan (unrelated) history via
+    `git checkout --orphan` + `git branch -M`, sharing no common ancestor
+    with the clone's HEAD, while `behind_ahead` still reports the clone as
+    behind -- regression fixture for 02-RESEARCH.md Pitfall 3/5: `merge_base`
+    must return None here (exit 1, no common ancestor) so `check_repo` routes
+    to CHECK_FAILED, never a silent no-conflict / bogus BEHIND result.
+    """
+    origin_dir = tmp_path / "origin"
+    _init_origin(origin_dir, default_branch_name)
+
+    clone_dir = tmp_path / "clone"
+    _clone_from(origin_dir, clone_dir, tmp_path)
+
+    _run(["checkout", "--orphan", "rewritten-base"], origin_dir)
+    _run(["rm", "-rf", "."], origin_dir)
+    (origin_dir / "unrelated.txt").write_text("no shared history\n")
+    _run(["add", "unrelated.txt"], origin_dir)
+    _run(["commit", "-m", "rewritten unrelated history"], origin_dir)
+    _run(["branch", "-M", "rewritten-base", default_branch_name], origin_dir)
+
+    return str(origin_dir), str(clone_dir)
+
+
+@pytest.fixture()
 def fixture_repos_fetch_fails(tmp_path, default_branch_name):
     """Clone whose origin remote points at a path that no longer exists."""
     origin_dir = tmp_path / "origin"
