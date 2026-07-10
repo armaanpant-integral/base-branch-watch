@@ -67,6 +67,21 @@ def _diverged_status(name="repo-g", behind=3, ahead=2, base="main"):
     )
 
 
+def _conflict_risk_status(name="repo-i", conflict_paths=("a.py", "b.py"), base="main"):
+    return _status(
+        name,
+        branch_statuses=[
+            BranchStatus(
+                base=base,
+                behind=1,
+                ahead_of_base=0,
+                kind=StatusKind.CONFLICT_RISK,
+                conflict_paths=list(conflict_paths),
+            )
+        ],
+    )
+
+
 def _not_checked_status(name="repo-c"):
     return _status(name)
 
@@ -141,6 +156,13 @@ def test_build_diverged_row():
     specs = menu_builder.build([status], has_repos=True)
 
     assert specs[0].title == "🔴 myrepo: diverged — 3 behind, 2 ahead (main)"
+
+
+def test_build_conflict_risk_row_shows_badge():
+    status = _conflict_risk_status("myrepo", conflict_paths=("a.py", "b.py"), base="main")
+    specs = menu_builder.build([status], has_repos=True)
+
+    assert specs[0].title == "⚠️ myrepo: conflict risk — 2 file(s) overlap (main)"
 
 
 def test_build_check_failed_row_repo_level():
