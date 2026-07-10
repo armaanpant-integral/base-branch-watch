@@ -165,6 +165,46 @@ def test_build_conflict_risk_row_shows_badge():
     assert specs[0].title == "⚠️ myrepo: conflict risk — 2 file(s) overlap (main)"
 
 
+def test_build_conflict_risk_lists_overlapping_paths():
+    status = _conflict_risk_status("myrepo", conflict_paths=("a.py", "b.py"), base="main")
+    specs = menu_builder.build([status], has_repos=True)
+
+    assert specs[0].callback_key is None
+    assert [c.title for c in specs[0].children] == ["a.py", "b.py"]
+
+
+def test_build_conflict_risk_caps_path_rows():
+    paths = [f"file{i:02d}.py" for i in range(15)]
+    status = _conflict_risk_status("myrepo", conflict_paths=paths, base="main")
+    specs = menu_builder.build([status], has_repos=True)
+
+    children = specs[0].children
+    assert len(children) == 11
+    assert [c.title for c in children[:10]] == paths[:10]
+    assert children[-1].title == "…and 5 more"
+
+
+def test_build_multi_base_conflict_risk_child_row_has_path_children():
+    status = _status(
+        "myrepo",
+        branch_statuses=[
+            BranchStatus(base="main", behind=0, ahead_of_base=0, kind=StatusKind.UP_TO_DATE),
+            BranchStatus(
+                base="release",
+                behind=1,
+                ahead_of_base=0,
+                kind=StatusKind.CONFLICT_RISK,
+                conflict_paths=["a.py", "b.py"],
+            ),
+        ],
+    )
+    specs = menu_builder.build([status], has_repos=True)
+
+    parent = specs[0]
+    conflict_child = next(c for c in parent.children if c.title.startswith("⚠️"))
+    assert [gc.title for gc in conflict_child.children] == ["a.py", "b.py"]
+
+
 def test_build_check_failed_row_repo_level():
     specs = menu_builder.build([_check_failed_status("myrepo")], has_repos=True)
 
