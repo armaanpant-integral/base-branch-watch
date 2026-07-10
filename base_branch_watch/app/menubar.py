@@ -302,8 +302,22 @@ class BaseBranchWatchApp(rumps.App):
             if status.failure_reason:
                 rumps.alert(title=status.name, message=status.failure_reason)
                 return
-            branch_status = status.branch_statuses[0] if status.branch_statuses else None
-            if branch_status is None or branch_status.behind == 0:
+            branch_status = status.worst_branch_status
+            if branch_status is None:
+                rumps.alert(title=status.name, message="Up to date.")
+            elif branch_status.kind == StatusKind.CHECK_FAILED:
+                rumps.alert(
+                    title=status.name, message=branch_status.reason or "unknown error"
+                )
+            elif branch_status.kind == StatusKind.DIVERGED:
+                rumps.alert(
+                    title=status.name,
+                    message=(
+                        f"Diverged — {branch_status.behind} behind, "
+                        f"{branch_status.ahead_of_base} ahead ({branch_status.base})."
+                    ),
+                )
+            elif branch_status.behind == 0:
                 rumps.alert(title=status.name, message="Up to date.")
             else:
                 rumps.alert(
