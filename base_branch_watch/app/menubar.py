@@ -41,6 +41,11 @@ class BaseBranchWatchApp(rumps.App):
         # time*, even after .title mutates later (see rumps.MenuItem docstring) —
         # track it separately so deletion can find the item by its original key.
         self._repo_item_keys: dict[str, str] = {}
+        # Multi-base submenu child rows: repo_path -> {base: rumps.MenuItem}.
+        # Populated only for repos whose spec has children (2+ base branches);
+        # mutated in place on subsequent renders, same discipline as
+        # _repo_items/_repo_item_keys above (Pitfall 10).
+        self._repo_child_items: dict[str, dict[str, rumps.MenuItem]] = {}
         self._empty_item: rumps.MenuItem | None = None
         self._checking = False
         self.remove_menu: rumps.MenuItem | None = None
@@ -105,6 +110,7 @@ class BaseBranchWatchApp(rumps.App):
             for repo_path in list(self._repo_items.keys()):
                 del self.menu[self._repo_item_keys.pop(repo_path)]
                 del self._repo_items[repo_path]
+                self._repo_child_items.pop(repo_path, None)
             if self._empty_item is None:
                 self._empty_item = rumps.MenuItem(menu_builder.EMPTY_STATE_TITLE)
                 self.menu.insert_before(ADD_REPO_TITLE, self._empty_item)
@@ -119,6 +125,7 @@ class BaseBranchWatchApp(rumps.App):
             if repo_path not in current_keys:
                 del self.menu[self._repo_item_keys.pop(repo_path)]
                 del self._repo_items[repo_path]
+                self._repo_child_items.pop(repo_path, None)
 
         for status, spec in zip(statuses, specs):
             self._render_row(status, spec)
@@ -126,12 +133,73 @@ class BaseBranchWatchApp(rumps.App):
     def _render_row(self, status: RepoStatus, spec: MenuItemSpec) -> None:
         item = self._repo_items.get(status.repo_path)
         if item is None:
-            item = rumps.MenuItem(spec.title, callback=self._repo_click_handler(status.repo_path))
+            if spec.children:
+                # Submenu parent: NO callback (Pitfall — a native NSMenu
+                # submenu parent only expands; a callback would conflict).
+                item = rumps.MenuItem(spec.title)
+                self._repo_child_items[status.repo_path] = self._build_submenu_children(
+                    item, status.repo_path, spec.children
+                )
+            else:
+                item = rumps.MenuItem(
+                    spec.title, callback=self._repo_click_handler(status.repo_path)
+                )
             self._repo_items[status.repo_path] = item
             self._repo_item_keys[status.repo_path] = spec.title
             self.menu.insert_before(ADD_REPO_TITLE, item)
         else:
             item.title = spec.title  # mutate in place, never rebuild (Pitfall 10)
+            if spec.children:
+                self._update_submenu_children(item, status.repo_path, spec.children)
+
+    def _build_submenu_children(
+        self, parent: rumps.MenuItem, repo_path: str, children: list[MenuItemSpec]
+    ) -> dict[str, rumps.MenuItem]:
+        """Populate parent's own sub-items from children, keyed by base name.
+
+        parent is itself a Menu (rumps.MenuItem subclasses Menu), so it
+        supports the same add()/insert_before()/__setitem__ surface as
+        self.menu — same construction pattern as the top-level repo rows.
+        """
+        child_items: dict[str, rumps.MenuItem] = {}
+        for child_spec in children:
+            base = self._base_from_callback_key(child_spec.callback_key)
+            child_item = rumps.MenuItem(
+                child_spec.title, callback=self._child_click_handler(repo_path, base)
+            )
+            parent.add(child_item)
+            child_items[base] = child_item
+        return child_items
+
+    def _update_submenu_children(
+        self, parent: rumps.MenuItem, repo_path: str, children: list[MenuItemSpec]
+    ) -> None:
+        """Mutate existing child MenuItems in place (Pitfall 10) — same
+        discipline as _render_row's top-level title mutation. Falls back to
+        a full rebuild if the configured base set itself has changed (rare —
+        only happens if a repo's base branches are edited without going
+        through the remove/re-add path that already clears stale state)."""
+        child_items = self._repo_child_items.setdefault(repo_path, {})
+        current_bases = {self._base_from_callback_key(c.callback_key) for c in children}
+        if set(child_items.keys()) != current_bases:
+            if len(parent) > 0:
+                parent.clear()
+            self._repo_child_items[repo_path] = self._build_submenu_children(
+                parent, repo_path, children
+            )
+            return
+        for child_spec in children:
+            base = self._base_from_callback_key(child_spec.callback_key)
+            child_items[base].title = child_spec.title
+
+    @staticmethod
+    def _base_from_callback_key(callback_key: str | None) -> str:
+        """Child MenuItemSpec.callback_key is f"{repo_path}::{base}" (see
+        menu_builder._child_row) — the base name is everything after the
+        last "::" (repo paths may contain "::" only in pathological cases,
+        so split from the right to stay robust)."""
+        assert callback_key is not None
+        return callback_key.rsplit("::", 1)[-1]
 
     # -- static menu actions -------------------------------------------------
 
@@ -242,6 +310,34 @@ class BaseBranchWatchApp(rumps.App):
                     title=status.name,
                     message=f"{branch_status.behind} commits behind ({branch_status.base}).",
                 )
+
+        return handler
+
+    def _child_click_handler(self, repo_path: str, base: str):
+        """Per-base submenu row click — same message vocabulary as
+        _repo_click_handler, but scoped to this one base rather than the
+        repo's worst status."""
+
+        def handler(_sender):
+            status = self.statuses.get(repo_path)
+            if status is None:
+                rumps.alert(title=repo_path, message="Not checked yet.")
+                return
+            bs = next((b for b in status.branch_statuses if b.base == base), None)
+            title = f"{status.name} ({base})"
+            if bs is None:
+                rumps.alert(title=title, message="Not checked yet.")
+            elif bs.kind == StatusKind.CHECK_FAILED:
+                rumps.alert(title=title, message=bs.reason or "unknown error")
+            elif bs.kind == StatusKind.DIVERGED:
+                rumps.alert(
+                    title=title,
+                    message=f"Diverged — {bs.behind} behind, {bs.ahead_of_base} ahead.",
+                )
+            elif bs.behind == 0:
+                rumps.alert(title=title, message="Up to date.")
+            else:
+                rumps.alert(title=title, message=f"{bs.behind} commits behind.")
 
         return handler
 
