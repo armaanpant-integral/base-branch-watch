@@ -53,6 +53,15 @@ def _single_base_row(status: RepoStatus) -> MenuItemSpec:
             callback_key=status.repo_path,
         )
 
+    if bs.kind == StatusKind.CONFLICT_RISK:
+        return MenuItemSpec(
+            title=(
+                f"⚠️ {status.name}: conflict risk — "
+                f"{len(bs.conflict_paths)} file(s) overlap ({bs.base})"
+            ),
+            callback_key=status.repo_path,
+        )
+
     if bs.kind == StatusKind.BEHIND:
         if unpushed > 0:
             title = f"🟡 {status.name}: {bs.behind} behind ({bs.base}) · {unpushed} unpushed"
@@ -76,6 +85,8 @@ def _child_row(status: RepoStatus, bs: BranchStatus) -> MenuItemSpec:
         title = f"🔴 {bs.base}: check failed — {reason}"
     elif bs.kind == StatusKind.DIVERGED:
         title = f"🔴 {bs.base}: diverged — {bs.behind} behind, {bs.ahead_of_base} ahead"
+    elif bs.kind == StatusKind.CONFLICT_RISK:
+        title = f"⚠️ {bs.base}: conflict risk — {len(bs.conflict_paths)} file(s) overlap"
     elif bs.kind == StatusKind.BEHIND:
         title = f"🟡 {bs.base}: {bs.behind} behind"
     else:
@@ -84,7 +95,10 @@ def _child_row(status: RepoStatus, bs: BranchStatus) -> MenuItemSpec:
 
 
 def _multi_base_row(status: RepoStatus) -> MenuItemSpec:
-    glyph = _SEVERITY_GLYPH[status.severity]
+    if status.worst_kind == StatusKind.CONFLICT_RISK:
+        glyph = "⚠️"
+    else:
+        glyph = _SEVERITY_GLYPH[status.severity]
     title = f"{glyph} {status.name} ({len(status.branch_statuses)} base branches)"
     if status.unpushed > 0:
         title += f" · {status.unpushed} unpushed"
