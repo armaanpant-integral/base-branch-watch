@@ -19,11 +19,29 @@ from base_branch_watch.core.models import (
 
 EMPTY_STATE_TITLE = "No repos watched — click Add Repo… below"
 
+CONFLICT_PATHS_ROW_CAP = 10
+
 _SEVERITY_GLYPH = {
     Severity.OK: "🟢",
     Severity.ATTENTION: "🟡",
     Severity.BLOCKING: "🔴",
 }
+
+
+def _conflict_path_children(bs: BranchStatus) -> list[MenuItemSpec]:
+    """D-04: one child row per overlapping path, capped at
+    CONFLICT_PATHS_ROW_CAP with an "…and N more" overflow row so a large
+    overlap never renders an unusable menu (RESEARCH Open Question 2).
+    bs.conflict_paths is already sorted by check_repo(); iteration order is
+    preserved here."""
+    children = [
+        MenuItemSpec(title=path, callback_key=None)
+        for path in bs.conflict_paths[:CONFLICT_PATHS_ROW_CAP]
+    ]
+    overflow = len(bs.conflict_paths) - CONFLICT_PATHS_ROW_CAP
+    if overflow > 0:
+        children.append(MenuItemSpec(title=f"…and {overflow} more", callback_key=None))
+    return children
 
 
 def _check_failed_reason(status: RepoStatus, bs: BranchStatus) -> str:
@@ -59,7 +77,8 @@ def _single_base_row(status: RepoStatus) -> MenuItemSpec:
                 f"⚠️ {status.name}: conflict risk — "
                 f"{len(bs.conflict_paths)} file(s) overlap ({bs.base})"
             ),
-            callback_key=status.repo_path,
+            callback_key=None,
+            children=_conflict_path_children(bs),
         )
 
     if bs.kind == StatusKind.BEHIND:
@@ -91,7 +110,10 @@ def _child_row(status: RepoStatus, bs: BranchStatus) -> MenuItemSpec:
         title = f"🟡 {bs.base}: {bs.behind} behind"
     else:
         title = f"🟢 {bs.base}"
-    return MenuItemSpec(title=title, callback_key=f"{status.repo_path}::{bs.base}")
+    children = _conflict_path_children(bs) if bs.kind == StatusKind.CONFLICT_RISK else []
+    return MenuItemSpec(
+        title=title, callback_key=f"{status.repo_path}::{bs.base}", children=children
+    )
 
 
 def _multi_base_row(status: RepoStatus) -> MenuItemSpec:
