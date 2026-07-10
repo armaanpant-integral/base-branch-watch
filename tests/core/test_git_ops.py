@@ -134,3 +134,35 @@ def test_check_repo_fetch_failure_is_distinct_not_bogus_behind(
     assert branch_status.reason == "fetch failed — check network/SSH access"
     assert status.worst_kind == StatusKind.CHECK_FAILED
     assert status.severity == Severity.BLOCKING
+
+
+def test_check_repo_conflict_risk_when_local_and_incoming_overlap(
+    fixture_repos_conflict_overlap, default_branch_name
+):
+    _origin, clone_path = fixture_repos_conflict_overlap
+
+    status = git_ops.check_repo(
+        RepoConfig(repo_path=clone_path, base_branches=[default_branch_name])
+    )
+
+    assert status.failure_reason is None
+    branch_status = status.branch_statuses[0]
+    assert branch_status.kind == StatusKind.CONFLICT_RISK
+    assert branch_status.conflict_paths == ["shared.txt"]
+    assert status.worst_kind == StatusKind.CONFLICT_RISK
+    assert status.severity == Severity.BLOCKING
+
+
+def test_check_repo_behind_without_overlap_stays_behind(
+    fixture_repos_behind_no_overlap, default_branch_name
+):
+    _origin, clone_path = fixture_repos_behind_no_overlap
+
+    status = git_ops.check_repo(
+        RepoConfig(repo_path=clone_path, base_branches=[default_branch_name])
+    )
+
+    assert status.failure_reason is None
+    branch_status = status.branch_statuses[0]
+    assert branch_status.kind in (StatusKind.BEHIND, StatusKind.DIVERGED)
+    assert branch_status.conflict_paths == []

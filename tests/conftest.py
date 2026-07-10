@@ -44,7 +44,12 @@ def _init_origin(origin_dir: Path, default_branch: str) -> None:
     _run(["config", "user.email", "test@example.com"], origin_dir)
     _run(["config", "user.name", "Test"], origin_dir)
     (origin_dir / "file.txt").write_text("hello\n")
-    _run(["add", "file.txt"], origin_dir)
+    # shared.txt exists from the initial commit so both origin and every clone
+    # start out tracking it -- needed by fixture_repos_conflict_overlap and
+    # fixture_repos_behind_no_overlap (Phase 2 conflict-risk fixtures) to give
+    # both sides a common path to independently edit.
+    (origin_dir / "shared.txt").write_text("shared original\n")
+    _run(["add", "file.txt", "shared.txt"], origin_dir)
     _run(["commit", "-m", "initial commit"], origin_dir)
 
 
@@ -94,9 +99,13 @@ def _clone_from(origin_dir: Path, clone_dir: Path, tmp_path: Path) -> None:
 def fixture_repos_diverged(tmp_path, default_branch_name):
     """Clone with a local unique commit AND origin independently advanced -> diverged.
 
-    Both sides add a commit on top of the same shared ancestor with unrelated
-    content, so the clone's HEAD is both behind (origin has a commit it lacks)
-    and ahead (it has a commit origin lacks) of origin/<base>.
+    Both sides add a commit on top of the same shared ancestor touching
+    DIFFERENT paths (clone_only.txt vs file.txt), so the clone's HEAD is both
+    behind (origin has a commit it lacks) and ahead (it has a commit origin
+    lacks) of origin/<base>, with zero file-path overlap -- this fixture
+    tests pure DIVERGED status calculation, distinct from the conflict-risk
+    overlap fixtures (fixture_repos_conflict_overlap /
+    fixture_repos_behind_no_overlap) which deliberately touch the same path.
     """
     origin_dir = tmp_path / "origin"
     _init_origin(origin_dir, default_branch_name)
@@ -104,8 +113,8 @@ def fixture_repos_diverged(tmp_path, default_branch_name):
     clone_dir = tmp_path / "clone"
     _clone_from(origin_dir, clone_dir, tmp_path)
 
-    (clone_dir / "file.txt").write_text("local diverged change\n")
-    _run(["add", "file.txt"], clone_dir)
+    (clone_dir / "clone_only.txt").write_text("local diverged change\n")
+    _run(["add", "clone_only.txt"], clone_dir)
     _run(["commit", "-m", "local diverged commit"], clone_dir)
 
     (origin_dir / "file.txt").write_text("origin advanced change\n")
@@ -201,7 +210,9 @@ def fixture_repos_multi_base(tmp_path, default_branch_name):
     "release" is branched from the same initial commit and never advances, so
     the clone's one local commit only makes it ahead of "release" (not flagged
     without a corresponding behind). The default branch independently advances
-    on origin AND the clone has its own local commit -> diverged.
+    on origin AND the clone has its own local commit -> diverged. The two
+    sides touch DIFFERENT paths (clone_only.txt vs file.txt) so this fixture
+    exercises pure DIVERGED status, not conflict-risk overlap.
     """
     origin_dir = tmp_path / "origin"
     _init_origin(origin_dir, default_branch_name)
@@ -210,8 +221,8 @@ def fixture_repos_multi_base(tmp_path, default_branch_name):
     clone_dir = tmp_path / "clone"
     _clone_from(origin_dir, clone_dir, tmp_path)
 
-    (clone_dir / "file.txt").write_text("clone diverged change\n")
-    _run(["add", "file.txt"], clone_dir)
+    (clone_dir / "clone_only.txt").write_text("clone diverged change\n")
+    _run(["add", "clone_only.txt"], clone_dir)
     _run(["commit", "-m", "clone diverged commit"], clone_dir)
 
     (origin_dir / "file.txt").write_text("origin advanced change\n")
@@ -227,6 +238,59 @@ def fixture_repo_no_upstream(tmp_path, default_branch_name):
     repo_dir = tmp_path / "solo"
     _init_origin(repo_dir, default_branch_name)
     return str(repo_dir)
+
+
+@pytest.fixture()
+def fixture_repos_conflict_overlap(tmp_path, default_branch_name):
+    """Clone has a branch-unique commit touching shared.txt AND an uncommitted
+    working-tree edit to file.txt; origin independently advances the SAME
+    shared.txt path -> the incoming range and the local change set overlap.
+
+    Exercises both halves of D-01's local scope: the branch-unique commit
+    (shared.txt) and the working-tree diff (file.txt), though only shared.txt
+    is expected to actually overlap with origin's incoming change.
+    """
+    origin_dir = tmp_path / "origin"
+    _init_origin(origin_dir, default_branch_name)
+
+    clone_dir = tmp_path / "clone"
+    _clone_from(origin_dir, clone_dir, tmp_path)
+
+    (clone_dir / "shared.txt").write_text("clone edited shared\n")
+    _run(["add", "shared.txt"], clone_dir)
+    _run(["commit", "-m", "clone edits shared.txt"], clone_dir)
+
+    # Uncommitted working-tree edit to a different tracked file -- exercises
+    # D-01's working-tree half without contributing to the overlap itself.
+    (clone_dir / "file.txt").write_text("clone working-tree edit\n")
+
+    (origin_dir / "shared.txt").write_text("origin advanced shared\n")
+    _run(["add", "shared.txt"], origin_dir)
+    _run(["commit", "-m", "origin advances shared.txt"], origin_dir)
+
+    return str(origin_dir), str(clone_dir)
+
+
+@pytest.fixture()
+def fixture_repos_behind_no_overlap(tmp_path, default_branch_name):
+    """Clone is behind on shared.txt (origin advances it) but the clone's only
+    local change touches a distinct file (other.txt) -> zero path overlap.
+    """
+    origin_dir = tmp_path / "origin"
+    _init_origin(origin_dir, default_branch_name)
+
+    clone_dir = tmp_path / "clone"
+    _clone_from(origin_dir, clone_dir, tmp_path)
+
+    (clone_dir / "other.txt").write_text("clone local change\n")
+    _run(["add", "other.txt"], clone_dir)
+    _run(["commit", "-m", "clone edits other.txt"], clone_dir)
+
+    (origin_dir / "shared.txt").write_text("origin advanced shared\n")
+    _run(["add", "shared.txt"], origin_dir)
+    _run(["commit", "-m", "origin advances shared.txt"], origin_dir)
+
+    return str(origin_dir), str(clone_dir)
 
 
 @pytest.fixture()
