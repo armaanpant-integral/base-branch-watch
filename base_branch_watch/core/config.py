@@ -55,14 +55,16 @@ def load_config() -> AppConfig:
     except (json.JSONDecodeError, OSError):
         return AppConfig()
 
-    repos = [
-        RepoConfig(repo_path=r["repo_path"], base_branches=list(r.get("base_branches", [])))
-        for r in raw.get("repos", [])
-    ]
-    return AppConfig(
-        poll_interval_seconds=raw.get("poll_interval_seconds", DEFAULT_POLL_INTERVAL_SECONDS),
-        repos=repos,
-    )
+    try:
+        repos = [
+            RepoConfig(repo_path=r["repo_path"], base_branches=list(r.get("base_branches", [])))
+            for r in raw.get("repos", [])
+            if isinstance(r, dict) and "repo_path" in r
+        ]
+        poll_interval = raw.get("poll_interval_seconds", DEFAULT_POLL_INTERVAL_SECONDS)
+    except (AttributeError, TypeError, KeyError):
+        return AppConfig()
+    return AppConfig(poll_interval_seconds=poll_interval, repos=repos)
 
 
 def parse_base_branches(raw: str) -> list[str]:
