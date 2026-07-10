@@ -95,7 +95,12 @@ def behind_ahead(
 ) -> tuple[int, int]:
     """(behind, ahead) of left_ref relative to right_ref via rev-list --left-right --count.
 
-    Never raises — mirrors every sibling function in this module.
+    Never raises — mirrors every sibling function in this module. Returns
+    (-1, -1) as a sentinel if the underlying git invocation itself times out
+    or errors (OSError/TimeoutExpired) — distinct from a genuine (0, 0) "no
+    divergence" result, so callers like check_repo can tell "confirmed no
+    divergence" apart from "couldn't determine" (WR-04). A nonzero git exit
+    (e.g. an unresolvable ref) still collapses to (0, 0), unchanged.
     """
     try:
         result = _run_git(
@@ -104,7 +109,7 @@ def behind_ahead(
             timeout,
         )
     except (subprocess.TimeoutExpired, OSError):
-        return (0, 0)
+        return (-1, -1)
     if result.returncode != 0:
         return (0, 0)
     parts = result.stdout.strip().split()
@@ -183,16 +188,19 @@ def check_repo(repo: RepoConfig) -> RepoStatus:
             )
             continue
 
-        try:
-            behind, ahead = behind_ahead(repo.repo_path, "HEAD", f"origin/{base}")
-        except (subprocess.TimeoutExpired, OSError):
+        # behind_ahead never raises (WR-02); it signals "couldn't determine"
+        # (fetch succeeded, but the local rev-list comparison itself timed
+        # out/errored) via the (-1, -1) sentinel, distinct from a genuine
+        # (0, 0) "no divergence" result.
+        behind, ahead = behind_ahead(repo.repo_path, "HEAD", f"origin/{base}")
+        if behind == -1 and ahead == -1:
             branch_statuses.append(
                 BranchStatus(
                     base=base,
                     behind=0,
                     ahead_of_base=0,
                     kind=StatusKind.CHECK_FAILED,
-                    reason="fetch failed — check network/SSH access",
+                    reason="status check failed — local git error",
                 )
             )
             continue
