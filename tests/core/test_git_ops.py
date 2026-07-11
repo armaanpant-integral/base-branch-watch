@@ -119,6 +119,20 @@ def test_unpushed_count_zero_when_no_upstream(fixture_repo_no_upstream):
     assert count == 0
 
 
+def test_fetch_rejects_dash_prefixed_base_as_flag(fixture_repos):
+    """A base-branch string starting with '-' must never be parsed as a git
+    option (argument-injection guard). With the '--' positional separator in
+    place, git reports a missing ref rather than acting on the flag."""
+    _origin, clone_path = fixture_repos
+
+    result = git_ops.fetch(clone_path, "--upload-pack=/bin/false")
+
+    assert result.ok is False
+    # git treated the whole string as a literal (nonexistent) ref name, not
+    # as an --upload-pack option -- proof the '--' separator holds.
+    assert "couldn't find remote ref" in (result.error or "").lower()
+
+
 def test_check_repo_fetch_failure_is_distinct_not_bogus_behind(
     fixture_repos_fetch_fails, default_branch_name
 ):

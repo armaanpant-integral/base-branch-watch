@@ -110,10 +110,10 @@ def _child_row(status: RepoStatus, bs: BranchStatus) -> MenuItemSpec:
         title = f"🟡 {bs.base}: {bs.behind} behind"
     else:
         title = f"🟢 {bs.base}"
-    children = _conflict_path_children(bs) if bs.kind == StatusKind.CONFLICT_RISK else []
-    return MenuItemSpec(
-        title=title, callback_key=f"{status.repo_path}::{bs.base}", children=children
-    )
+    is_conflict_risk = bs.kind == StatusKind.CONFLICT_RISK
+    children = _conflict_path_children(bs) if is_conflict_risk else []
+    callback_key = None if is_conflict_risk else f"{status.repo_path}::{bs.base}"
+    return MenuItemSpec(title=title, callback_key=callback_key, children=children)
 
 
 def _multi_base_row(status: RepoStatus) -> MenuItemSpec:

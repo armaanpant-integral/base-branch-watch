@@ -203,6 +203,7 @@ def test_build_multi_base_conflict_risk_child_row_has_path_children():
     parent = specs[0]
     conflict_child = next(c for c in parent.children if c.title.startswith("⚠️"))
     assert [gc.title for gc in conflict_child.children] == ["a.py", "b.py"]
+    assert conflict_child.callback_key is None
 
 
 def test_build_check_failed_row_repo_level():

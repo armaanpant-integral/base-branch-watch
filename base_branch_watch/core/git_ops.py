@@ -54,7 +54,7 @@ def detect_default_branch(repo_path: str, timeout: int = 10) -> str | None:
 def fetch(repo_path: str, base: str, timeout: int = 15) -> FetchResult:
     """`git fetch origin <base> --quiet`. Never raises on nonzero exit."""
     try:
-        result = _run_git(repo_path, ["fetch", "origin", base, "--quiet"], timeout)
+        result = _run_git(repo_path, ["fetch", "--quiet", "origin", "--", base], timeout)
     except subprocess.TimeoutExpired:
         return FetchResult(ok=False, error=f"fetch timed out after {timeout}s")
     except OSError as exc:
