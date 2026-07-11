@@ -16,6 +16,11 @@ from base_branch_watch.core.models import BranchStatus, RepoConfig, RepoStatus, 
 
 GIT = shutil.which("git") or "/usr/bin/git"
 
+ZERO_SHA = "0" * 40
+"""All-zeros SHA git uses on the pre-push stdin protocol to mean "no commit
+on this side" -- a deleted ref's local side, or a brand-new ref's remote
+side (03-RESEARCH.md Pattern 1)."""
+
 
 @dataclass
 class FetchResult:
@@ -135,6 +140,127 @@ def merge_base(repo_path: str, left: str, right: str, timeout: int = 10) -> str 
         return None
     sha = result.stdout.strip()
     return sha or None
+
+
+def merge_tree_dry_run(
+    repo_path: str, branch1: str, branch2: str, timeout: int = 20
+) -> tuple[bool, list[str]] | None:
+    """`git merge-tree --write-tree --name-only -z -- branch1 branch2` dry run.
+
+    Authoritative, non-mutating conflict check (git >= 2.38) -- writes an
+    unreferenced loose object into .git/objects and does NOT touch the
+    working tree, index, or HEAD (03-RESEARCH.md Pitfall 6). Uses
+    subprocess.run directly (not _run_git, which forces text=True) so the
+    NUL-separated stdout can be split exactly as bytes.
+
+    branch1/branch2 sit after a mandatory "--" separator: they are
+    config-controlled base-branch names flowing into a git argument list,
+    and a value like "--stdin" would otherwise be interpreted as a real
+    merge-tree flag (extends fetch()'s CR-01 guard -- 03-RESEARCH.md Pitfall
+    2, empirically reproduced as a live silent-bypass PoC this session).
+
+    Exit-status semantics (03-RESEARCH.md Pattern 2 / Pitfall 3b):
+    - returncode == 0                        -> clean merge -> (False, [])
+    - returncode == 1 AND non-empty stdout    -> real conflict -> (True, paths)
+    - returncode == 1 AND EMPTY stdout        -> an unresolvable ref (e.g. a
+      typo'd base, or origin/<base> not yet fetched) -- NOT a conflict, and
+      must never be parsed as one.
+    - any other returncode                    -> a genuine error.
+    The last two cases both collapse to None, the same "couldn't determine"
+    sentinel used everywhere else in this file -- never confuse either with
+    a real conflict or a clean result.
+    """
+    try:
+        result = subprocess.run(
+            [
+                GIT,
+                "-C",
+                repo_path,
+                "merge-tree",
+                "--write-tree",
+                "--name-only",
+                "-z",
+                "--",
+                branch1,
+                branch2,
+            ],
+            capture_output=True,
+            timeout=timeout,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    if result.returncode == 0:
+        return (False, [])
+    if result.returncode == 1 and result.stdout:
+        parts = result.stdout.split(b"\x00")
+        conflicted: list[str] = []
+        for part in parts[1:]:  # parts[0] is the written tree OID
+            if part == b"":
+                break  # first empty part terminates the conflicted-path list
+            conflicted.append(part.decode("utf-8", "surrogateescape"))
+        return (True, conflicted)
+    return None  # any other code, OR returncode==1 with empty stdout (unresolvable ref)
+
+
+def hooks_path(repo_path: str, timeout: int = 10) -> str | None:
+    """`git rev-parse --git-path hooks`, resolved to an ABSOLUTE path.
+
+    Honors core.hooksPath overrides -- never hardcode ".git/hooks"
+    (03-RESEARCH.md Pitfall 1). The raw output is repo-relative in both the
+    default case AND a relative core.hooksPath override; only an absolute
+    override value yields an absolute result directly. Always join a
+    relative result onto repo_path.
+    """
+    try:
+        result = _run_git(repo_path, ["rev-parse", "--git-path", "hooks"], timeout)
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    if result.returncode != 0:
+        return None
+    raw_path = result.stdout.strip()
+    if not raw_path:
+        return None
+    if os.path.isabs(raw_path):
+        return raw_path
+    return os.path.normpath(os.path.join(repo_path, raw_path))
+
+
+def repo_toplevel(repo_path: str = ".", timeout: int = 10) -> str | None:
+    """`git rev-parse --show-toplevel`. Never raises; None on failure."""
+    try:
+        result = _run_git(repo_path, ["rev-parse", "--show-toplevel"], timeout)
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    if result.returncode != 0:
+        return None
+    toplevel = result.stdout.strip()
+    return toplevel or None
+
+
+def parse_pre_push_stdin(stdin_text: str) -> list[tuple[str, str, str, str]]:
+    """Parse git's pre-push ref-update lines (PURE -- no subprocess, never raises).
+
+    One line per ref being pushed:
+        <local-ref> SP <local-sha1> SP <remote-ref> SP <remote-sha1> LF
+    (03-RESEARCH.md Pattern 1, empirically reproduced against a real
+    `git push` this session -- normal push, delete push, multi-ref push).
+    Lines that don't split into exactly 4 whitespace-separated fields are
+    skipped defensively (blank lines, malformed input).
+    """
+    updates: list[tuple[str, str, str, str]] = []
+    for line in stdin_text.splitlines():
+        parts = line.split()
+        if len(parts) != 4:
+            continue
+        updates.append((parts[0], parts[1], parts[2], parts[3]))
+    return updates
+
+
+def is_delete(local_ref: str, local_sha: str) -> bool:
+    """A ref update is a delete when its local side is all-zeros -- nothing
+    being pushed for that ref, so there is no local commit to conflict-check.
+    """
+    return local_sha == ZERO_SHA
 
 
 def _parse_name_status_z(raw: str) -> set[str]:
