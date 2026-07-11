@@ -175,20 +175,37 @@ class BaseBranchWatchApp(rumps.App):
     def _build_submenu_children(
         self, parent: rumps.MenuItem, repo_path: str, children: list[MenuItemSpec]
     ) -> dict[str, rumps.MenuItem]:
-        """Populate parent's own sub-items from children, keyed by base name.
+        """Populate parent's own sub-items from children, keyed by _child_key.
 
         parent is itself a Menu (rumps.MenuItem subclasses Menu), so it
         supports the same add()/insert_before()/__setitem__ surface as
         self.menu — same construction pattern as the top-level repo rows.
+
+        A child_spec falls into one of three shapes:
+        - has its own children (e.g. a CONFLICT_RISK base row nested inside
+          a multi-base repo's submenu, itself listing overlapping files):
+          build it as a nested submenu parent (no callback) and recurse.
+        - callback_key set, no children: the existing "one clickable child
+          per base" leaf.
+        - callback_key None, no children: a plain informational leaf
+          (conflict-path row, "…and N more" overflow row, or a single-base
+          repo's own conflict-path children) — never clickable.
         """
         child_items: dict[str, rumps.MenuItem] = {}
         for child_spec in children:
-            base = self._base_from_callback_key(child_spec.callback_key)
-            child_item = rumps.MenuItem(
-                child_spec.title, callback=self._child_click_handler(repo_path, base)
-            )
+            key = self._child_key(child_spec)
+            if child_spec.children:
+                child_item = rumps.MenuItem(child_spec.title)
+                self._build_submenu_children(child_item, repo_path, child_spec.children)
+            elif child_spec.callback_key is not None:
+                base = self._base_from_callback_key(child_spec.callback_key)
+                child_item = rumps.MenuItem(
+                    child_spec.title, callback=self._child_click_handler(repo_path, base)
+                )
+            else:
+                child_item = rumps.MenuItem(child_spec.title)
             parent.add(child_item)
-            child_items[base] = child_item
+            child_items[key] = child_item
         return child_items
 
     def _update_submenu_children(
@@ -196,12 +213,12 @@ class BaseBranchWatchApp(rumps.App):
     ) -> None:
         """Mutate existing child MenuItems in place (Pitfall 10) — same
         discipline as _render_row's top-level title mutation. Falls back to
-        a full rebuild if the configured base set itself has changed (rare —
-        only happens if a repo's base branches are edited without going
-        through the remove/re-add path that already clears stale state)."""
+        a full rebuild if the child key set itself has changed (rare —
+        base branches edited, or a base's conflict-risk state just
+        toggled on/off, changing whether it has nested children)."""
         child_items = self._repo_child_items.setdefault(repo_path, {})
-        current_bases = {self._base_from_callback_key(c.callback_key) for c in children}
-        if set(child_items.keys()) != current_bases:
+        current_keys = {self._child_key(c) for c in children}
+        if set(child_items.keys()) != current_keys:
             if len(parent) > 0:
                 parent.clear()
             self._repo_child_items[repo_path] = self._build_submenu_children(
@@ -209,15 +226,36 @@ class BaseBranchWatchApp(rumps.App):
             )
             return
         for child_spec in children:
-            base = self._base_from_callback_key(child_spec.callback_key)
-            child_items[base].title = child_spec.title
+            item = child_items[self._child_key(child_spec)]
+            if child_spec.children:
+                # Nested list contents (which files overlap) may have
+                # changed even though the parent row's own key is stable;
+                # polling is infrequent enough that a full nested rebuild
+                # is cheap and avoids stale sub-items.
+                if len(item) > 0:
+                    item.clear()
+                self._build_submenu_children(item, repo_path, child_spec.children)
+            else:
+                item.title = child_spec.title
+
+    def _child_key(self, child_spec: MenuItemSpec) -> str:
+        """Stable per-poll identity for a submenu child. Callback-bearing
+        rows (one clickable child per base) key off callback_key's base
+        segment; non-clickable rows (conflict-path leaves, the overflow
+        row) have no callback_key and are keyed by title instead — title is
+        unique within any one conflict-path list."""
+        if child_spec.callback_key is not None:
+            return self._base_from_callback_key(child_spec.callback_key)
+        return child_spec.title
 
     @staticmethod
     def _base_from_callback_key(callback_key: str | None) -> str:
         """Child MenuItemSpec.callback_key is f"{repo_path}::{base}" (see
         menu_builder._child_row) — the base name is everything after the
         last "::" (repo paths may contain "::" only in pathological cases,
-        so split from the right to stay robust)."""
+        so split from the right to stay robust). Only called on a
+        known-non-None callback_key (see _child_key / _build_submenu_children
+        callers) — the assert documents that contract."""
         assert callback_key is not None
         return callback_key.rsplit("::", 1)[-1]
 

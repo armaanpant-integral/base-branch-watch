@@ -147,6 +147,101 @@ def test_render_single_base_repo_still_flat_and_clickable(app):
     assert status.repo_path not in app._repo_child_items
 
 
+def _conflict_risk_single_base_status(name="repo-conflict", paths=("a.py", "b.py")):
+    return _status(
+        name,
+        branch_statuses=[
+            BranchStatus(
+                base="main",
+                behind=1,
+                ahead_of_base=0,
+                kind=StatusKind.CONFLICT_RISK,
+                conflict_paths=list(paths),
+            )
+        ],
+    )
+
+
+def _conflict_risk_multi_base_status(name="repo-conflict-multi", paths=("a.py", "b.py")):
+    return _status(
+        name,
+        branch_statuses=[
+            BranchStatus(base="main", behind=0, ahead_of_base=0, kind=StatusKind.UP_TO_DATE),
+            BranchStatus(
+                base="release",
+                behind=1,
+                ahead_of_base=0,
+                kind=StatusKind.CONFLICT_RISK,
+                conflict_paths=list(paths),
+            ),
+        ],
+    )
+
+
+def test_render_conflict_risk_single_base_repo_does_not_raise(app):
+    """Regression for the Phase 2 verification gap: a single-base
+    CONFLICT_RISK row's own children are conflict-path leaves with
+    callback_key=None — _render must not crash on that shape."""
+    status = _conflict_risk_single_base_status()
+    _configure(app, status)
+
+    app._render([status])
+
+    item = app._repo_items[status.repo_path]
+    assert item.callback is None, "conflict-risk row becomes a submenu parent, no callback"
+    assert len(item) == 2
+    child_items = app._repo_child_items[status.repo_path]
+    assert set(child_items.keys()) == {"a.py", "b.py"}
+    for child in child_items.values():
+        assert child.callback is None, "file-path rows are informational, never clickable"
+    assert child_items["a.py"].title == "a.py"
+    assert child_items["b.py"].title == "b.py"
+
+
+def test_render_conflict_risk_multi_base_repo_nests_path_children(app):
+    """A CONFLICT_RISK base inside a multi-base repo's submenu gets its own
+    nested submenu of overlapping file paths, while its sibling non-conflict
+    base stays a flat clickable child."""
+    status = _conflict_risk_multi_base_status()
+    _configure(app, status)
+
+    app._render([status])
+
+    parent = app._repo_items[status.repo_path]
+    assert parent.callback is None
+    child_items = app._repo_child_items[status.repo_path]
+    # "main" keeps its stable base-derived key (has a callback_key); the
+    # CONFLICT_RISK "release" row has no callback_key of its own, so it
+    # falls back to a title-derived key (see _child_key).
+    assert set(child_items.keys()) == {
+        "main",
+        "⚠️ release: conflict risk — 2 file(s) overlap",
+    }
+
+    main_child = child_items["main"]
+    assert main_child.callback is not None
+    assert len(main_child) == 0
+
+    release_child = child_items["⚠️ release: conflict risk — 2 file(s) overlap"]
+    assert release_child.callback is None, "conflict-risk base child has no callback of its own"
+    assert len(release_child) == 2
+    assert {item.title for item in release_child.values()} == {"a.py", "b.py"}
+
+
+def test_render_conflict_risk_updates_nested_children_in_place_on_second_render(app):
+    status = _conflict_risk_single_base_status(paths=("a.py",))
+    _configure(app, status)
+    app._render([status])
+    item_first = app._repo_items[status.repo_path]
+
+    updated = _conflict_risk_single_base_status(paths=("a.py", "c.py"))
+    app._render([updated])
+
+    assert app._repo_items[status.repo_path] is item_first, "must mutate in place (Pitfall 10)"
+    child_items = app._repo_child_items[status.repo_path]
+    assert set(child_items.keys()) == {"a.py", "c.py"}
+
+
 def test_repo_click_handler_check_failed_base_shows_reason_not_up_to_date(app, monkeypatch):
     reason = "fetch failed — check network/SSH access"
     status = _check_failed_single_base_status("myrepo", reason=reason)
