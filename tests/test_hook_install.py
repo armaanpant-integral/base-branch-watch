@@ -131,5 +131,6 @@ def test_install_is_idempotent(fixture_repos):
     lines = hook_file.read_text().splitlines()
     assert lines[1] == MARKER
     assert hook_file.parent.exists()
-    # exactly one hook file at the resolved path, no accidental duplication
-    assert list(hook_file.parent.glob("pre-push*")) == [hook_file]
+    # exactly one "pre-push" hook file at the resolved path (not counting
+    # git's own unrelated "pre-push.sample" placeholder), no duplication
+    assert [p for p in hook_file.parent.iterdir() if p.name == "pre-push"] == [hook_file]
