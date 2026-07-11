@@ -12,7 +12,13 @@ import shutil
 import subprocess
 from dataclasses import dataclass
 
-from base_branch_watch.core.models import BranchStatus, RepoConfig, RepoStatus, StatusKind
+from base_branch_watch.core.models import (
+    BranchStatus,
+    IncomingCommit,
+    RepoConfig,
+    RepoStatus,
+    StatusKind,
+)
 
 GIT = shutil.which("git") or "/usr/bin/git"
 
@@ -347,6 +353,62 @@ def incoming_changed_paths(
     if result.returncode != 0:
         return None
     return _parse_name_status_z(result.stdout)
+
+
+def _commit_changed_paths(repo_path: str, sha: str, timeout: int) -> set[str]:
+    """Paths touched by a SINGLE commit -- `git diff-tree --no-commit-id
+    --name-only -r -z <sha>` (03-RESEARCH.md Code Examples). Distinct from
+    `incoming_changed_paths`'s flat range diff: D-06's per-commit overlap
+    flag needs to know which INDIVIDUAL commit touches an overlapping path,
+    not just whether the whole range does. Never raises; [] on failure."""
+    try:
+        result = _run_git(
+            repo_path, ["diff-tree", "--no-commit-id", "--name-only", "-r", "-z", sha], timeout
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return set()
+    if result.returncode != 0:
+        return set()
+    return {p for p in result.stdout.split("\0") if p}
+
+
+def incoming_commits(
+    repo_path: str, mb: str, base_ref: str, timeout: int = 15
+) -> list[IncomingCommit]:
+    """D-05's per-base commit list: `git log --no-merges --format=... mb..base_ref`,
+    newest-first, each with its own `_commit_changed_paths` set for D-06's
+    overlap flag. `mb` is always a merge-base SHA (never dash-prefixed) and
+    `base_ref` is always caller-constructed as `origin/<base>` (never
+    dash-prefixed either) -- the `mb..base_ref` range positional can never be
+    mistaken for a flag, mirroring `merge_base`'s existing bare-positional
+    precedent in this same file. Never raises; [] on any failure.
+    """
+    try:
+        result = _run_git(
+            repo_path,
+            ["log", "--no-merges", "--format=%h\x1f%an\x1f%s", f"{mb}..{base_ref}"],
+            timeout,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return []
+    if result.returncode != 0:
+        return []
+    commits: list[IncomingCommit] = []
+    for line in result.stdout.splitlines():
+        parts = line.split("\x1f", 2)
+        if len(parts) != 3:
+            continue
+        short_hash, author, subject = parts
+        changed_paths = _commit_changed_paths(repo_path, short_hash, timeout)
+        commits.append(
+            IncomingCommit(
+                short_hash=short_hash,
+                author=author,
+                subject=subject,
+                changed_paths=changed_paths,
+            )
+        )
+    return commits
 
 
 def unpushed_count(repo_path: str, timeout: int = 10) -> int:
