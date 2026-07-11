@@ -110,7 +110,12 @@ install() {
     fi
 
     mkdir -p "$hooks_dir"
-    sed -e "s#__PYTHON__#$python_bin#g" "$TEMPLATE" > "$hook_path"
+    # Escape sed metacharacters (including our own "#" delimiter) in the
+    # interpreter path before interpolating it as replacement text -- an
+    # unescaped "#"/"&"/"\" in python_bin would otherwise corrupt the
+    # substitution (WR-03).
+    python_bin_escaped=$(printf '%s\n' "$python_bin" | sed 's/[&#\\]/\\&/g')
+    sed -e "s#__PYTHON__#$python_bin_escaped#g" "$TEMPLATE" > "$hook_path"
     chmod +x "$hook_path"
     echo "Installed bbwatch pre-push hook: $hook_path"
 }

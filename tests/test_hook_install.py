@@ -257,12 +257,50 @@ def test_backfill_hooks_installs_once_per_configured_repo(app, monkeypatch):
 def test_install_hook_for_bakes_sys_executable(app, monkeypatch):
     captured_args: list[list[str]] = []
 
-    def fake_run(args, timeout=None):
+    def fake_run(args, **kwargs):
         captured_args.append(args)
-        return subprocess.CompletedProcess(args, 0)
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
 
     monkeypatch.setattr(menubar_module.subprocess, "run", fake_run)
 
     app._install_hook_for("/tmp/some-repo")
 
     assert captured_args[-1][-1] == sys.executable
+
+
+def test_install_hook_for_logs_on_nonzero_exit(app, monkeypatch):
+    """CR-01 regression: a refused install (e.g. a foreign hook already
+    present) must surface a [FAIL] log line, not fail silently."""
+
+    def fake_run(args, **kwargs):
+        return subprocess.CompletedProcess(
+            args, 1, stdout="", stderr="refusing to overwrite foreign hook"
+        )
+
+    monkeypatch.setattr(menubar_module.subprocess, "run", fake_run)
+    logged: list[str] = []
+    monkeypatch.setattr(menubar_module.log, "append", lambda line: logged.append(line))
+
+    app._install_hook_for("/tmp/some-repo")
+
+    assert any(
+        "[FAIL]" in line and "refusing to overwrite foreign hook" in line for line in logged
+    )
+
+
+def test_uninstall_hook_for_logs_on_nonzero_exit(app, monkeypatch):
+    """CR-01 regression, uninstall side: a refused uninstall (e.g. the
+    installed hook isn't bbwatch-managed) must surface a [FAIL] log line."""
+
+    def fake_run(args, **kwargs):
+        return subprocess.CompletedProcess(args, 1, stdout="", stderr="not a bbwatch-managed hook")
+
+    monkeypatch.setattr(menubar_module.subprocess, "run", fake_run)
+    logged: list[str] = []
+    monkeypatch.setattr(menubar_module.log, "append", lambda line: logged.append(line))
+
+    app._uninstall_hook_for("/tmp/some-repo")
+
+    assert any(
+        "[FAIL]" in line and "not a bbwatch-managed hook" in line for line in logged
+    )

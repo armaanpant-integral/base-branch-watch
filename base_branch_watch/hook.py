@@ -86,31 +86,41 @@ def main(argv: list[str] | None = None) -> int:
     # 03-02-PLAN.md's overlap_paths=local_changes wiring).
     overlap_paths: set[str] = set()
     gating = False
+    real_conflict = False
 
     for local_ref, local_sha, _remote_ref, _remote_sha in updates:
         if git_ops.is_delete(local_ref, local_sha):
             continue
         for base in matched_repo.base_branches:
-            git_ops.fetch(matched_repo.repo_path, base)
+            # Retry once (WR-01): a transient network blip during fetch must
+            # not masquerade as "undeterminable -> gate" with a misleading
+            # "conflicts detected" message -- same discipline check_repo's
+            # poller path already applies via fetch_with_retry.
+            git_ops.fetch_with_retry(matched_repo.repo_path, base)
             origin_ref = f"origin/{base}"
 
             mb = git_ops.merge_base(matched_repo.repo_path, local_sha, origin_ref)
             local_changes = git_ops.working_tree_paths(matched_repo.repo_path) or set()
             if mb is not None:
-                local_changes |= git_ops.branch_unique_paths(matched_repo.repo_path, mb) or set()
+                local_changes |= (
+                    git_ops.branch_unique_paths(matched_repo.repo_path, mb, local_sha) or set()
+                )
             overlap_paths |= local_changes
 
             commits = git_ops.incoming_commits(matched_repo.repo_path, mb, origin_ref) if mb else []
             per_base.append((origin_ref, commits))
 
             result = git_ops.merge_tree_dry_run(matched_repo.repo_path, local_sha, origin_ref)
-            if result is None or result[0]:
-                # result[0] True = a real conflict; None = undeterminable
-                # (timeout, unresolvable ref, unrelated histories, ...).
-                # Both gate the push -- fail-closed default abort (D-08),
-                # routed through the same prompt so it's never an
-                # unbypassable hard block (HOOK-03).
+            if result is None:
+                # Undeterminable (timeout, unresolvable ref, unrelated
+                # histories, fetch failure surviving the retry above) --
+                # gates the push, fail-closed default abort (D-08), but is
+                # NOT necessarily a real conflict -- the prompt message
+                # below must not overclaim.
                 gating = True
+            elif result[0]:
+                gating = True
+                real_conflict = True
 
     for line in hook_summary.build_summary(per_base, overlap_paths=overlap_paths):
         print(line)
@@ -118,9 +128,17 @@ def main(argv: list[str] | None = None) -> int:
     if not gating:
         return 0
 
-    allowed = prompt_push_anyway("Potential conflicts detected with the base branch.")
+    # Routed through the same prompt either way so it's never an
+    # unbypassable hard block (HOOK-03) -- only the message differs.
+    message = (
+        "Potential conflicts detected with the base branch."
+        if real_conflict
+        else "Could not determine whether the base branch conflicts "
+        "(fetch/network issue) -- gating to be safe."
+    )
+    allowed = prompt_push_anyway(message)
     return 0 if allowed else 1
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(sys.argv[1:]))

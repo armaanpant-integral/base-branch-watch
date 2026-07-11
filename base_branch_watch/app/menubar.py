@@ -274,22 +274,38 @@ class BaseBranchWatchApp(rumps.App):
         can't abort the startup backfill loop or the add-repo flow
         (T-03-12)."""
         try:
-            subprocess.run(
+            result = subprocess.run(
                 ["/bin/sh", str(cli.HOOK_SCRIPT_PATH), repo_path, sys.executable],
                 timeout=15,
+                capture_output=True,
+                text=True,
             )
         except (subprocess.TimeoutExpired, OSError) as exc:
             log.append(f"[FAIL] pre-push hook install failed for {repo_path}: {exc!r}")
+            return
+        if result.returncode != 0:
+            log.append(
+                f"[FAIL] pre-push hook install failed for {repo_path}: "
+                f"{result.stderr.strip() or 'exit ' + str(result.returncode)}"
+            )
 
     def _uninstall_hook_for(self, repo_path: str) -> None:
         """Symmetric with _install_hook_for (D-04); never raises."""
         try:
-            subprocess.run(
+            result = subprocess.run(
                 ["/bin/sh", str(cli.HOOK_SCRIPT_PATH), "--uninstall", repo_path],
                 timeout=15,
+                capture_output=True,
+                text=True,
             )
         except (subprocess.TimeoutExpired, OSError) as exc:
             log.append(f"[FAIL] pre-push hook uninstall failed for {repo_path}: {exc!r}")
+            return
+        if result.returncode != 0:
+            log.append(
+                f"[FAIL] pre-push hook uninstall failed for {repo_path}: "
+                f"{result.stderr.strip() or 'exit ' + str(result.returncode)}"
+            )
 
     def _backfill_hooks(self) -> None:
         """Startup backfill: install the pre-push hook into every already-
@@ -342,7 +358,7 @@ class BaseBranchWatchApp(rumps.App):
             return
         repo_path = panel.URLs()[0].path()
 
-        if not os.path.isdir(os.path.join(repo_path, ".git")):
+        if git_ops.repo_toplevel(repo_path) is None:
             self._show_alert(
                 title="Not a Git Repository",
                 message=f"{repo_path}\n\nChoose a folder that is a git repository.",

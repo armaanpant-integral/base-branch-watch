@@ -325,11 +325,18 @@ def working_tree_paths(repo_path: str, timeout: int = 10) -> set[str] | None:
     return changed | untracked
 
 
-def branch_unique_paths(repo_path: str, mb: str, timeout: int = 10) -> set[str] | None:
-    """Paths changed between `mb` (merge-base) and HEAD — D-01's branch-unique
-    half, base-dependent. None on subprocess failure or nonzero returncode."""
+def branch_unique_paths(
+    repo_path: str, mb: str, right_ref: str = "HEAD", timeout: int = 10
+) -> set[str] | None:
+    """Paths changed between `mb` (merge-base) and `right_ref` — D-01's
+    branch-unique half, base-dependent. `right_ref` defaults to `HEAD` for
+    the poller's own use (check_repo), but hook.py must pass the actual
+    pushed `local_sha` from git's pre-push protocol — the checked-out HEAD
+    is not necessarily the ref being pushed (multi-ref pushes, pushing a
+    non-checked-out local branch). None on subprocess failure or nonzero
+    returncode."""
     try:
-        result = _run_git(repo_path, ["diff", "--name-status", "-z", mb, "HEAD"], timeout)
+        result = _run_git(repo_path, ["diff", "--name-status", "-z", mb, right_ref], timeout)
     except (subprocess.TimeoutExpired, OSError):
         return None
     if result.returncode != 0:
@@ -468,7 +475,7 @@ def check_repo(repo: RepoConfig) -> RepoStatus:
 
     branch_statuses: list[BranchStatus] = []
     for base in repo.base_branches:
-        fetch_result = _fetch_with_retry(repo.repo_path, base)
+        fetch_result = fetch_with_retry(repo.repo_path, base)
 
         if not fetch_result.ok:
             branch_statuses.append(
@@ -559,7 +566,7 @@ def check_repo(repo: RepoConfig) -> RepoStatus:
     )
 
 
-def _fetch_with_retry(repo_path: str, base: str) -> FetchResult:
+def fetch_with_retry(repo_path: str, base: str) -> FetchResult:
     """`fetch` once, retrying a single time on failure (Pitfall 8 - distinguish
     a transient network blip from a genuinely unreachable remote)."""
     try:
