@@ -16,7 +16,12 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+import rumps
+
+from base_branch_watch.app import menubar as menubar_module
 from base_branch_watch.core import git_ops
+from base_branch_watch.core.models import RepoConfig
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 INSTALL_SCRIPT = REPO_ROOT / "scripts" / "install-pre-push-hook.sh"
@@ -134,3 +139,130 @@ def test_install_is_idempotent(fixture_repos):
     # exactly one "pre-push" hook file at the resolved path (not counting
     # git's own unrelated "pre-push.sample" placeholder), no duplication
     assert [p for p in hook_file.parent.iterdir() if p.name == "pre-push"] == [hook_file]
+
+
+# -- menubar add/remove/backfill trigger points (Task 3) --------------------
+#
+# Monkeypatch-and-capture style, per tests/app/test_menubar.py -- constructs
+# a real BaseBranchWatchApp (pure-Python/PyObjC object setup, never touches
+# the NSApplication run loop) and captures calls to the hook trigger methods
+# instead of letting them shell out for real.
+
+
+class _FakeURL:
+    def __init__(self, path: str) -> None:
+        self._path = path
+
+    def path(self) -> str:
+        return self._path
+
+
+class _FakePanel:
+    def __init__(self, path: str) -> None:
+        self._path = path
+
+    def setCanChooseDirectories_(self, _value) -> None:
+        pass
+
+    def setCanChooseFiles_(self, _value) -> None:
+        pass
+
+    def setAllowsMultipleSelection_(self, _value) -> None:
+        pass
+
+    def setPrompt_(self, _value) -> None:
+        pass
+
+    def runModal(self) -> int:
+        return 1
+
+    def URLs(self) -> list[_FakeURL]:
+        return [_FakeURL(self._path)]
+
+
+def _patch_open_panel(monkeypatch, repo_path: str) -> None:
+    class _FakeNSOpenPanel:
+        @staticmethod
+        def openPanel():
+            return _FakePanel(repo_path)
+
+    monkeypatch.setattr(menubar_module, "NSOpenPanel", _FakeNSOpenPanel)
+
+
+def _patch_confirm_alert(monkeypatch) -> None:
+    def fake_show_alert(title, message, ok="OK", cancel=None):
+        return 1  # simulates clicking the confirm/ok button
+
+    monkeypatch.setattr(
+        menubar_module.BaseBranchWatchApp, "_show_alert", staticmethod(fake_show_alert)
+    )
+
+
+@pytest.fixture()
+def app(bbw_config_dir):
+    """A real BaseBranchWatchApp -- __init__ only does pure-Python/PyObjC
+    object setup, and cfg.repos is empty (isolated, fresh BBW_CONFIG_DIR),
+    so the startup backfill loop and check_all(None) are real but instant
+    no-ops. Same fixture shape as tests/app/test_menubar.py's own `app`."""
+    instance = menubar_module.BaseBranchWatchApp()
+    yield instance
+    instance.timer.stop()
+
+
+def test_add_repo_triggers_hook_install(app, monkeypatch, fixture_repos):
+    _origin, clone_path = fixture_repos
+    _patch_open_panel(monkeypatch, clone_path)
+
+    class FakeResp:
+        clicked = True
+        text = "main"
+
+    fake_window = type("W", (), {"run": lambda self: FakeResp()})
+    monkeypatch.setattr(rumps, "Window", lambda **kwargs: fake_window())
+
+    captured: list[str] = []
+    monkeypatch.setattr(app, "_install_hook_for", lambda repo_path: captured.append(repo_path))
+
+    app._add_repo(None)
+
+    assert captured == [clone_path]
+
+
+def test_remove_repo_handler_triggers_hook_uninstall(app, monkeypatch):
+    repo_path = "/tmp/some-repo-to-remove"
+    app.cfg.repos = [RepoConfig(repo_path=repo_path, base_branches=["main"])]
+    _patch_confirm_alert(monkeypatch)
+
+    captured: list[str] = []
+    monkeypatch.setattr(app, "_uninstall_hook_for", lambda repo_path: captured.append(repo_path))
+
+    app._remove_repo_click_handler(repo_path)(None)
+
+    assert captured == [repo_path]
+
+
+def test_backfill_hooks_installs_once_per_configured_repo(app, monkeypatch):
+    app.cfg.repos = [
+        RepoConfig(repo_path="/tmp/repo-one", base_branches=["main"]),
+        RepoConfig(repo_path="/tmp/repo-two", base_branches=["main"]),
+    ]
+    captured: list[str] = []
+    monkeypatch.setattr(app, "_install_hook_for", lambda repo_path: captured.append(repo_path))
+
+    app._backfill_hooks()
+
+    assert captured == ["/tmp/repo-one", "/tmp/repo-two"]
+
+
+def test_install_hook_for_bakes_sys_executable(app, monkeypatch):
+    captured_args: list[list[str]] = []
+
+    def fake_run(args, timeout=None):
+        captured_args.append(args)
+        return subprocess.CompletedProcess(args, 0)
+
+    monkeypatch.setattr(menubar_module.subprocess, "run", fake_run)
+
+    app._install_hook_for("/tmp/some-repo")
+
+    assert captured_args[-1][-1] == sys.executable

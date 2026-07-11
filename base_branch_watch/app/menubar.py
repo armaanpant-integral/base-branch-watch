@@ -12,10 +12,12 @@ from __future__ import annotations
 import datetime
 import os
 import subprocess
+import sys
 
 import rumps
 from AppKit import NSAlert, NSApplication, NSOpenPanel, NSWindowCollectionBehaviorCanJoinAllSpaces
 
+from base_branch_watch import cli
 from base_branch_watch.app import menu_builder
 from base_branch_watch.core import config, git_ops, log, state
 from base_branch_watch.core.models import MenuItemSpec, RepoStatus, Severity, StatusKind
@@ -55,6 +57,7 @@ class BaseBranchWatchApp(rumps.App):
         self._state: state.State = state.load_state()
 
         self._build_menu_shell()
+        self._backfill_hooks()
 
         self.timer = rumps.Timer(self.check_all, self.cfg.poll_interval_seconds)
         self.timer.start()
@@ -259,6 +262,45 @@ class BaseBranchWatchApp(rumps.App):
         assert callback_key is not None
         return callback_key.rsplit("::", 1)[-1]
 
+    # -- pre-push hook install/uninstall (HOOK-01, D-01/D-03/D-04) -----------
+
+    def _install_hook_for(self, repo_path: str) -> None:
+        """Trigger-only: the install logic itself lives entirely in
+        scripts/install-pre-push-hook.sh (via cli.HOOK_SCRIPT_PATH), reused
+        as-is -- never duplicated here (Architectural Responsibility Map).
+        Bakes sys.executable, the running app's own interpreter, which is
+        guaranteed to import base_branch_watch. Never raises (same
+        never-crashes discipline as core/git_ops.py) so a single bad repo
+        can't abort the startup backfill loop or the add-repo flow
+        (T-03-12)."""
+        try:
+            subprocess.run(
+                ["/bin/sh", str(cli.HOOK_SCRIPT_PATH), repo_path, sys.executable],
+                timeout=15,
+            )
+        except (subprocess.TimeoutExpired, OSError) as exc:
+            log.append(f"[FAIL] pre-push hook install failed for {repo_path}: {exc!r}")
+
+    def _uninstall_hook_for(self, repo_path: str) -> None:
+        """Symmetric with _install_hook_for (D-04); never raises."""
+        try:
+            subprocess.run(
+                ["/bin/sh", str(cli.HOOK_SCRIPT_PATH), "--uninstall", repo_path],
+                timeout=15,
+            )
+        except (subprocess.TimeoutExpired, OSError) as exc:
+            log.append(f"[FAIL] pre-push hook uninstall failed for {repo_path}: {exc!r}")
+
+    def _backfill_hooks(self) -> None:
+        """Startup backfill: install the pre-push hook into every already-
+        configured repo (idempotent re-install, foreign-hook-safe) so
+        "every watched repo" holds immediately on the Phase 3 upgrade, not
+        only for repos added after it ships. Safe to run on every launch --
+        re-installing a bbwatch-marked hook simply rewrites it, and a
+        foreign hook is refused and left untouched (D-03)."""
+        for repo in self.cfg.repos:
+            self._install_hook_for(repo.repo_path)
+
     # -- static menu actions -------------------------------------------------
 
     @staticmethod
@@ -331,6 +373,7 @@ class BaseBranchWatchApp(rumps.App):
 
         self.cfg = config.add_repo(self.cfg, repo_path, parsed)
         config.save_config(self.cfg)
+        self._install_hook_for(repo_path)
         self._rebuild_remove_submenu()
         self._rebuild_edit_submenu()
         self.check_all(None)
@@ -349,6 +392,7 @@ class BaseBranchWatchApp(rumps.App):
                 return
             self.cfg = config.remove_repo(self.cfg, repo_path)
             config.save_config(self.cfg)
+            self._uninstall_hook_for(repo_path)
             self.statuses.pop(repo_path, None)
             self._rebuild_remove_submenu()
             self._rebuild_edit_submenu()
