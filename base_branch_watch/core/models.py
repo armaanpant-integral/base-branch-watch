@@ -163,6 +163,17 @@ class RepoStatus:
 
 
 @dataclass
+class IncomingCommit:
+    """One commit in the D-05/D-06 pre-push drift summary's per-base commit
+    list, with its own changed-path set for D-06's per-commit overlap flag."""
+
+    short_hash: str
+    author: str
+    subject: str
+    changed_paths: set[str] = field(default_factory=set)
+
+
+@dataclass
 class MenuItemSpec:
     """Pure, rumps-free description of a single menu row (possibly a submenu parent)."""
 

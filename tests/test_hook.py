@@ -65,6 +65,7 @@ def test_hook_gate_aborts_on_conflict_without_tty(
     assert exit_code != 0
     captured = capsys.readouterr()
     assert default_branch_name in captured.out
+    assert "⚠️" in captured.out
 
 
 def test_hook_clean_repo_exits_zero_no_prompt(
@@ -85,6 +86,7 @@ def test_hook_clean_repo_exits_zero_no_prompt(
     assert tty_opened["called"] is False
     captured = capsys.readouterr()
     assert default_branch_name in captured.out
+    assert "incoming commit" in captured.out
 
 
 def test_hook_skip_gate_env_bypasses(

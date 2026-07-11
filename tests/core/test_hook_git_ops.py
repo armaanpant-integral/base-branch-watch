@@ -160,3 +160,30 @@ def test_parse_pre_push_stdin_two_ref_and_delete(stdin_text, expected):
 def test_is_delete_detects_zero_sha():
     assert git_ops.is_delete("refs/heads/x", git_ops.ZERO_SHA) is True
     assert git_ops.is_delete("refs/heads/x", "a" * 40) is False
+
+
+def test_incoming_commits_returns_commit_with_its_own_changed_paths(
+    fixture_repos_conflict_overlap, default_branch_name
+):
+    _origin, clone_path = fixture_repos_conflict_overlap
+    git_ops.fetch(clone_path, default_branch_name)
+    origin_ref = f"origin/{default_branch_name}"
+    mb = git_ops.merge_base(clone_path, "HEAD", origin_ref)
+    assert mb is not None
+
+    commits = git_ops.incoming_commits(clone_path, mb, origin_ref)
+
+    assert len(commits) == 1
+    commit = commits[0]
+    assert commit.short_hash
+    assert commit.author == "Test"
+    assert commit.subject == "origin advances shared.txt"
+    assert commit.changed_paths == {"shared.txt"}
+
+
+def test_incoming_commits_returns_empty_on_bad_ref(fixture_repos, default_branch_name):
+    _origin, clone_path = fixture_repos
+
+    commits = git_ops.incoming_commits(clone_path, "does-not-exist", "origin/does-not-exist")
+
+    assert commits == []
