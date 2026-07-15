@@ -12,6 +12,8 @@ from __future__ import annotations
 from base_branch_watch.core.models import (
     BranchStatus,
     MenuItemSpec,
+    PrStatus,
+    PrStatusKind,
     RepoStatus,
     Severity,
     StatusKind,
@@ -20,6 +22,9 @@ from base_branch_watch.core.models import (
 EMPTY_STATE_TITLE = "No repos watched — click Add Repo… below"
 
 CONFLICT_PATHS_ROW_CAP = 10
+
+PR_BRANCH_NAME_CAP = 40
+PR_REASON_CAP = 50
 
 _SEVERITY_GLYPH = {
     Severity.OK: "🟢",
@@ -149,6 +154,108 @@ def build(statuses: list[RepoStatus], has_repos: bool) -> list[MenuItemSpec]:
     if not has_repos:
         return [MenuItemSpec(title=EMPTY_STATE_TITLE, callback_key=None)]
     return [_row_for(status) for status in statuses]
+
+
+def _truncate(text: str, cap: int) -> str:
+    """Cap `text` at `cap` chars, appending a trailing … if longer (result
+    length is at most cap + 1, matching the 04-UI-SPEC.md truncation rules)."""
+    if len(text) <= cap:
+        return text
+    return text[:cap] + "…"
+
+
+def _checks_segment(status: PrStatus) -> tuple[str, str, str]:
+    """(glyph, top-level text, submenu child text) for the Checks segment —
+    04-UI-SPEC.md Checks segment + Submenu Children tables."""
+    total = status.checks_total
+    passed = status.checks_pass
+    fail = status.checks_fail
+    pending = status.checks_pending
+    if total == 0:
+        return "—", "no checks", "no checks configured"
+    if fail > 0:
+        text = f"{fail} failing ({passed}/{total})"
+        return "❌", text, text
+    if pending > 0:
+        text = f"{pending} pending ({passed}/{total})"
+        return "⏳", text, text
+    return "✅", f"{passed}/{total} checks", f"{passed}/{total} passing"
+
+
+def _review_segment(status: PrStatus) -> tuple[str, str, str]:
+    """(glyph, top-level text, submenu child text) for the Review segment —
+    04-UI-SPEC.md Review segment + Submenu Children tables."""
+    decision = status.review_decision
+    if decision == "APPROVED":
+        return "✅", "approved", "approved"
+    if decision == "CHANGES_REQUESTED":
+        return "❌", "changes requested", "changes requested"
+    if decision == "REVIEW_REQUIRED":
+        return "⏳", "review pending", "pending"
+    return "—", "no review required", "not required"
+
+
+def _mergeable_segment(status: PrStatus) -> tuple[str, str, str]:
+    """(glyph, top-level text, submenu child text) for the Mergeable segment —
+    04-UI-SPEC.md Mergeable segment + Submenu Children tables. Every known
+    mergeStateStatus value has an explicit branch; any unlisted/future value
+    falls into the forward-compatible default (never a raise/crash, per
+    Common Pitfall 3)."""
+    value = status.merge_state_status
+    base = status.base_ref
+    if value in ("CLEAN", "HAS_HOOKS"):
+        return "✅", "mergeable", "yes"
+    if value == "DIRTY":
+        child = f"conflicts with {base}" if base else "conflicts"
+        return "❌", "conflicts", child
+    if value == "BLOCKED":
+        return "❌", "blocked (required checks)", "blocked — required checks not met"
+    if value == "BEHIND":
+        child = f"behind {base}" if base else "behind base"
+        return "⏳", "behind base", child
+    if value == "DRAFT":
+        return "⏳", "draft", "draft PR"
+    if value == "UNSTABLE":
+        return "⏳", "mergeable (optional check failing)", "yes (optional check failing)"
+    return "⏳", "mergeability unknown", "unknown — GitHub still computing"
+
+
+def _pr_row(pr_status: PrStatus, repo_name: str) -> MenuItemSpec:
+    """D-05/D-06/D-07/D-02 — the second, independent PR-status row per repo.
+
+    Never uses 🟢/🟡/🔴 (D-08) — a completely separate glyph vocabulary from
+    _row_for's git-status rows. This phase (Plan 01) only ever receives OPEN,
+    NO_PR, or CHECK_FAILED from core.pr_status.check_pr; any other kind falls
+    into the CHECK_FAILED-shaped fallback below so a future kind never raises.
+    """
+    if pr_status.kind == PrStatusKind.OPEN:
+        checks_glyph, checks_text, checks_child = _checks_segment(pr_status)
+        review_glyph, review_text, review_child = _review_segment(pr_status)
+        mergeable_glyph, mergeable_text, mergeable_child = _mergeable_segment(pr_status)
+        title = (
+            f"🔀 {repo_name}: PR #{pr_status.number} — "
+            f"{checks_glyph} {checks_text} · {review_glyph} {review_text} · "
+            f"{mergeable_glyph} {mergeable_text}"
+        )
+        children = [
+            MenuItemSpec(title=f"{checks_glyph} Checks: {checks_child}", callback_key=None),
+            MenuItemSpec(title=f"{review_glyph} Review: {review_child}", callback_key=None),
+            MenuItemSpec(
+                title=f"{mergeable_glyph} Mergeable: {mergeable_child}", callback_key=None
+            ),
+        ]
+        return MenuItemSpec(title=title, callback_key=None, children=children)
+
+    if pr_status.kind == PrStatusKind.NO_PR:
+        branch = _truncate(pr_status.current_branch or "", PR_BRANCH_NAME_CAP)
+        return MenuItemSpec(title=f"⚪ {repo_name}: no open PR ({branch})", callback_key=None)
+
+    # CHECK_FAILED (generic Plan-01 scope) and forward-compat fallback for any
+    # other kind — never a raise/crash (D-11).
+    reason = _truncate(pr_status.reason or "unknown error", PR_REASON_CAP)
+    return MenuItemSpec(
+        title=f"⚠️ {repo_name}: PR status unavailable — {reason}", callback_key=None
+    )
 
 
 def title_for(statuses: list[RepoStatus]) -> str:

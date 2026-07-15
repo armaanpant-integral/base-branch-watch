@@ -10,11 +10,20 @@ wiring spec.children into a real submenu, and _repo_click_handler showing
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import pytest
 import rumps
 
 from base_branch_watch.app import menubar
-from base_branch_watch.core.models import BranchStatus, RepoConfig, RepoStatus, StatusKind
+from base_branch_watch.core.models import (
+    BranchStatus,
+    PrStatus,
+    PrStatusKind,
+    RepoConfig,
+    RepoStatus,
+    StatusKind,
+)
 
 
 def _configure(app, status: RepoStatus) -> None:
@@ -322,3 +331,130 @@ def test_child_click_handler_reports_specific_base_status(app, monkeypatch):
     assert "Diverged" in captured["message"]
     assert "4 behind" in captured["message"]
     assert "1 ahead" in captured["message"]
+
+
+# -- PR row (D-05/D-06/D-07/D-02/D-12) ----------------------------------------
+
+
+def test_render_pr_row_open_builds_submenu_placed_after_git_row(app):
+    status = _status(
+        "myrepo",
+        branch_statuses=[
+            BranchStatus(base="main", behind=0, ahead_of_base=0, kind=StatusKind.UP_TO_DATE)
+        ],
+    )
+    _configure(app, status)
+    app._render([status])
+
+    pr_status = PrStatus(
+        kind=PrStatusKind.OPEN,
+        number=42,
+        checks_pass=3,
+        checks_total=3,
+        review_decision="APPROVED",
+        merge_state_status="CLEAN",
+    )
+    from base_branch_watch.app import menu_builder
+
+    spec = menu_builder._pr_row(pr_status, status.name)
+    app._render_pr_row(status.repo_path, spec)
+
+    pr_item = app._pr_items[status.repo_path]
+    assert pr_item.callback is None
+    assert len(pr_item) == 3
+
+    menu_keys = list(app.menu.keys())
+    git_key = app._repo_item_keys[status.repo_path]
+    pr_key = app._pr_item_keys[status.repo_path]
+    assert menu_keys.index(pr_key) == menu_keys.index(git_key) + 1, (
+        "PR row must sit immediately after its repo's git-status row"
+    )
+
+
+def test_render_pr_row_mutates_children_in_place_on_second_render(app):
+    status = _status(
+        "myrepo",
+        branch_statuses=[
+            BranchStatus(base="main", behind=0, ahead_of_base=0, kind=StatusKind.UP_TO_DATE)
+        ],
+    )
+    _configure(app, status)
+    app._render([status])
+
+    from base_branch_watch.app import menu_builder
+
+    open_status = PrStatus(
+        kind=PrStatusKind.OPEN,
+        number=42,
+        checks_pass=2,
+        checks_fail=1,
+        checks_total=3,
+        review_decision="REVIEW_REQUIRED",
+        merge_state_status="DIRTY",
+    )
+    spec_first = menu_builder._pr_row(open_status, status.name)
+    app._render_pr_row(status.repo_path, spec_first)
+    pr_item_first = app._pr_items[status.repo_path]
+    checks_child_first = app._pr_child_items[status.repo_path][0]
+
+    updated_status = PrStatus(
+        kind=PrStatusKind.OPEN,
+        number=42,
+        checks_pass=3,
+        checks_total=3,
+        review_decision="APPROVED",
+        merge_state_status="CLEAN",
+    )
+    spec_second = menu_builder._pr_row(updated_status, status.name)
+    app._render_pr_row(status.repo_path, spec_second)
+
+    assert app._pr_items[status.repo_path] is pr_item_first, "must mutate in place (Pitfall 10)"
+    assert app._pr_child_items[status.repo_path][0] is checks_child_first
+    assert checks_child_first.title == "✅ Checks: 3/3 passing"
+    assert pr_item_first.title == spec_second.title
+
+
+def test_render_pr_row_no_pr_flat_row_no_children(app):
+    status = _status(
+        "myrepo",
+        branch_statuses=[
+            BranchStatus(base="main", behind=0, ahead_of_base=0, kind=StatusKind.UP_TO_DATE)
+        ],
+    )
+    _configure(app, status)
+    app._render([status])
+
+    from base_branch_watch.app import menu_builder
+
+    pr_status = PrStatus(kind=PrStatusKind.NO_PR, current_branch="main")
+    spec = menu_builder._pr_row(pr_status, status.name)
+    app._render_pr_row(status.repo_path, spec)
+
+    pr_item = app._pr_items[status.repo_path]
+    assert pr_item.title == "⚪ myrepo: no open PR (main)"
+    assert len(pr_item) == 0
+    assert status.repo_path not in app._pr_child_items
+
+
+def test_check_all_renders_pr_row_from_fake_batch_result_without_raising(app, monkeypatch):
+    """A fake batch.check_all result (RepoStatus + PrStatus per repo) must
+    render a PR row into self._pr_items per repo without raising — the exact
+    integration point the plan calls out."""
+    status = _status(
+        "myrepo",
+        branch_statuses=[
+            BranchStatus(base="main", behind=0, ahead_of_base=0, kind=StatusKind.UP_TO_DATE)
+        ],
+    )
+    app.cfg.repos = [RepoConfig(repo_path=status.repo_path, base_branches=["main"])]
+    pr_status = PrStatus(kind=PrStatusKind.NO_PR, current_branch="main")
+
+    with patch(
+        "base_branch_watch.app.menubar.batch.check_all",
+        return_value=([status], {status.repo_path: pr_status}),
+    ):
+        app.check_all(None)
+
+    assert status.repo_path in app._pr_items
+    assert app._pr_items[status.repo_path].title == "⚪ myrepo: no open PR (main)"
+    assert app._pr_statuses[status.repo_path] is pr_status

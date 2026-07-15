@@ -2,13 +2,13 @@ from __future__ import annotations
 
 from base_branch_watch.app import menu_builder
 from base_branch_watch.core.models import (
+    _KIND_SEVERITY,
+    _WORST_KIND_RANK,
     BranchStatus,
     PrStatus,
     PrStatusKind,
     RepoStatus,
     StatusKind,
-    _KIND_SEVERITY,
-    _WORST_KIND_RANK,
 )
 
 
@@ -359,3 +359,144 @@ def test_pr_row_no_pr_locked_string():
     assert spec.title == "⚪ base-branch-watch: no open PR (main)"
     assert spec.callback_key is None
     assert spec.children == []
+
+
+def test_pr_row_open_all_clear_children_order_and_text():
+    status = _pr_status(
+        kind=PrStatusKind.OPEN,
+        number=42,
+        checks_pass=3,
+        checks_total=3,
+        review_decision="APPROVED",
+        merge_state_status="CLEAN",
+    )
+
+    spec = menu_builder._pr_row(status, "base-branch-watch")
+
+    assert [c.title for c in spec.children] == [
+        "✅ Checks: 3/3 passing",
+        "✅ Review: approved",
+        "✅ Mergeable: yes",
+    ]
+    for child in spec.children:
+        assert child.callback_key is None
+
+
+def test_pr_row_open_failing_checks_locked_string():
+    status = _pr_status(
+        kind=PrStatusKind.OPEN,
+        number=7,
+        checks_pass=8,
+        checks_fail=3,
+        checks_total=11,
+        review_decision="REVIEW_REQUIRED",
+        merge_state_status="DIRTY",
+        base_ref="main",
+    )
+
+    spec = menu_builder._pr_row(status, "base-branch-watch")
+
+    assert spec.title == (
+        "🔀 base-branch-watch: PR #7 — ❌ 3 failing (8/11) · ⏳ review pending · ❌ conflicts"
+    )
+    assert [c.title for c in spec.children] == [
+        "❌ Checks: 3 failing (8/11)",
+        "⏳ Review: pending",
+        "❌ Mergeable: conflicts with main",
+    ]
+
+
+def test_pr_row_open_no_checks_configured():
+    status = _pr_status(
+        kind=PrStatusKind.OPEN,
+        checks_pass=0,
+        checks_fail=0,
+        checks_pending=0,
+        checks_total=0,
+    )
+
+    spec = menu_builder._pr_row(status, "base-branch-watch")
+
+    assert "— no checks ·" in spec.title
+    assert spec.children[0].title == "— Checks: no checks configured"
+
+
+def test_pr_row_open_pending_checks():
+    status = _pr_status(
+        kind=PrStatusKind.OPEN,
+        checks_pass=1,
+        checks_fail=0,
+        checks_pending=2,
+        checks_total=3,
+    )
+
+    spec = menu_builder._pr_row(status, "base-branch-watch")
+
+    assert "⏳ 2 pending (1/3) ·" in spec.title
+    assert spec.children[0].title == "⏳ Checks: 2 pending (1/3)"
+
+
+def test_pr_row_open_null_review_decision_is_distinct_case():
+    status = _pr_status(kind=PrStatusKind.OPEN, review_decision=None)
+
+    spec = menu_builder._pr_row(status, "base-branch-watch")
+
+    assert "— no review required ·" in spec.title
+    assert spec.children[1].title == "— Review: not required"
+
+
+def test_pr_row_open_mergeable_state_table():
+    cases = {
+        "CLEAN": ("✅", "mergeable", "yes"),
+        "HAS_HOOKS": ("✅", "mergeable", "yes"),
+        "DIRTY": ("❌", "conflicts", "conflicts with main"),
+        "BLOCKED": ("❌", "blocked (required checks)", "blocked — required checks not met"),
+        "BEHIND": ("⏳", "behind base", "behind main"),
+        "DRAFT": ("⏳", "draft", "draft PR"),
+        "UNSTABLE": ("⏳", "mergeable (optional check failing)", "yes (optional check failing)"),
+        "UNKNOWN": ("⏳", "mergeability unknown", "unknown — GitHub still computing"),
+        "SOME_FUTURE_VALUE": (
+            "⏳",
+            "mergeability unknown",
+            "unknown — GitHub still computing",
+        ),
+    }
+    for value, (glyph, text, child_text) in cases.items():
+        status = _pr_status(kind=PrStatusKind.OPEN, merge_state_status=value, base_ref="main")
+        spec = menu_builder._pr_row(status, "base-branch-watch")
+        assert f"{glyph} {text}" in spec.title, value
+        assert spec.children[2].title == f"{glyph} Mergeable: {child_text}", value
+
+
+def test_pr_row_check_failed_locked_string():
+    status = _pr_status(kind=PrStatusKind.CHECK_FAILED, reason="gh pr view timed out after 15s")
+
+    spec = menu_builder._pr_row(status, "base-branch-watch")
+
+    assert spec.title == (
+        "⚠️ base-branch-watch: PR status unavailable — gh pr view timed out after 15s"
+    )
+    assert spec.callback_key is None
+    assert spec.children == []
+
+
+def test_pr_row_no_pr_truncates_long_branch_name_to_40_chars():
+    long_branch = "x" * 60
+    status = _pr_status(kind=PrStatusKind.NO_PR, current_branch=long_branch)
+
+    spec = menu_builder._pr_row(status, "base-branch-watch")
+
+    branch_segment = spec.title.split("(", 1)[1].rstrip(")")
+    assert len(branch_segment) <= 41
+    assert branch_segment.endswith("…")
+
+
+def test_pr_row_check_failed_truncates_long_reason_to_50_chars():
+    long_reason = "y" * 80
+    status = _pr_status(kind=PrStatusKind.CHECK_FAILED, reason=long_reason)
+
+    spec = menu_builder._pr_row(status, "base-branch-watch")
+
+    reason_segment = spec.title.split("— ", 1)[1]
+    assert len(reason_segment) <= 51
+    assert reason_segment.endswith("…")
