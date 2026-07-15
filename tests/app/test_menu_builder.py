@@ -1,7 +1,15 @@
 from __future__ import annotations
 
 from base_branch_watch.app import menu_builder
-from base_branch_watch.core.models import BranchStatus, RepoStatus, StatusKind
+from base_branch_watch.core.models import (
+    BranchStatus,
+    PrStatus,
+    PrStatusKind,
+    RepoStatus,
+    StatusKind,
+    _KIND_SEVERITY,
+    _WORST_KIND_RANK,
+)
 
 
 def _status(
@@ -282,3 +290,72 @@ def test_menu_builder_module_is_pure_no_rumps_or_appkit_import():
     assert "from rumps" not in source
     assert "import AppKit" not in source
     assert "from AppKit" not in source
+
+
+# -- D-08 regression guard: PrStatusKind must never fold into the severity
+# system (_KIND_SEVERITY / _WORST_KIND_RANK are StatusKind-only). ------------
+
+
+def test_severity_tables_contain_no_pr_status_kind_members():
+    assert not any(isinstance(k, PrStatusKind) for k in _KIND_SEVERITY)
+    assert not any(isinstance(k, PrStatusKind) for k in _WORST_KIND_RANK)
+
+
+# -- PR row (D-05/D-06/D-07/D-02) — RED until Task 3 implements _pr_row -----
+
+
+def _pr_status(
+    kind=PrStatusKind.OPEN,
+    number=42,
+    checks_pass=3,
+    checks_fail=0,
+    checks_pending=0,
+    checks_total=3,
+    review_decision="APPROVED",
+    merge_state_status="CLEAN",
+    base_ref="main",
+    current_branch=None,
+    reason=None,
+):
+    return PrStatus(
+        kind=kind,
+        number=number,
+        checks_pass=checks_pass,
+        checks_fail=checks_fail,
+        checks_pending=checks_pending,
+        checks_total=checks_total,
+        review_decision=review_decision,
+        merge_state_status=merge_state_status,
+        base_ref=base_ref,
+        current_branch=current_branch,
+        reason=reason,
+    )
+
+
+def test_pr_row_open_all_clear_locked_string():
+    status = _pr_status(
+        kind=PrStatusKind.OPEN,
+        number=42,
+        checks_pass=3,
+        checks_total=3,
+        review_decision="APPROVED",
+        merge_state_status="CLEAN",
+    )
+
+    spec = menu_builder._pr_row(status, "base-branch-watch")
+
+    assert spec.title == (
+        "🔀 base-branch-watch: PR #42 — ✅ 3/3 checks · ✅ approved · ✅ mergeable"
+    )
+    assert spec.callback_key is None
+    assert len(spec.children) == 3
+
+
+def test_pr_row_no_pr_locked_string():
+    status = _pr_status(kind=PrStatusKind.NO_PR, current_branch="main")
+
+    spec = menu_builder._pr_row(status, "base-branch-watch")
+
+    assert spec.title == "⚪ base-branch-watch: no open PR (main)"
+    assert spec.callback_key is None
+    assert spec.children == []
