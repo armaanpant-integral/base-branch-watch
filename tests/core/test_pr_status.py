@@ -10,6 +10,8 @@ assertions, until then.
 
 from __future__ import annotations
 
+import datetime
+import json
 import subprocess
 from unittest.mock import patch
 
@@ -199,18 +201,11 @@ def test_rate_limit_reset_text_formats_epoch_to_hh_mm():
 
     # A known epoch — assert against the same local-time formatting the
     # implementation uses, rather than hardcoding a timezone-dependent string.
-    import datetime
-
     reset_epoch = 1784097752
     expected = datetime.datetime.fromtimestamp(reset_epoch).strftime("%H:%M")
 
-    rate_limit_result = _completed(
-        0,
-        stdout=(
-            '{"resources":{"graphql":{"limit":5000,"remaining":4989,'
-            f'"reset":{reset_epoch},"used":11}}}}'
-        ),
-    )
+    resources = {"graphql": {"limit": 5000, "remaining": 4989, "reset": reset_epoch, "used": 11}}
+    rate_limit_result = _completed(0, stdout=json.dumps({"resources": resources}))
 
     with patch(
         "base_branch_watch.core.pr_status.GH", "/usr/local/bin/gh"
