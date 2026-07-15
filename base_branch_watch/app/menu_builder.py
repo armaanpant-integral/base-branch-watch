@@ -221,12 +221,14 @@ def _mergeable_segment(status: PrStatus) -> tuple[str, str, str]:
 
 
 def _pr_row(pr_status: PrStatus, repo_name: str) -> MenuItemSpec:
-    """D-05/D-06/D-07/D-02 — the second, independent PR-status row per repo.
+    """D-05/D-06/D-07/D-02/D-09/D-10/D-03 — the second, independent
+    PR-status row per repo.
 
     Never uses 🟢/🟡/🔴 (D-08) — a completely separate glyph vocabulary from
-    _row_for's git-status rows. This phase (Plan 01) only ever receives OPEN,
-    NO_PR, or CHECK_FAILED from core.pr_status.check_pr; any other kind falls
-    into the CHECK_FAILED-shaped fallback below so a future kind never raises.
+    _row_for's git-status rows. Every PrStatusKind has its own explicit,
+    locked branch (04-UI-SPEC.md "Non-Open-PR States" table); only a truly
+    unrecognized future kind falls into the CHECK_FAILED-shaped fallback so
+    it never raises (D-11).
     """
     if pr_status.kind == PrStatusKind.OPEN:
         checks_glyph, checks_text, checks_child = _checks_segment(pr_status)
@@ -250,8 +252,36 @@ def _pr_row(pr_status: PrStatus, repo_name: str) -> MenuItemSpec:
         branch = _truncate(pr_status.current_branch or "", PR_BRANCH_NAME_CAP)
         return MenuItemSpec(title=f"⚪ {repo_name}: no open PR ({branch})", callback_key=None)
 
-    # CHECK_FAILED (generic Plan-01 scope) and forward-compat fallback for any
-    # other kind — never a raise/crash (D-11).
+    if pr_status.kind == PrStatusKind.MERGED:
+        return MenuItemSpec(
+            title=f"✅ {repo_name}: PR #{pr_status.number} merged", callback_key=None
+        )
+
+    if pr_status.kind == PrStatusKind.CLOSED:
+        return MenuItemSpec(
+            title=f"⚫ {repo_name}: PR #{pr_status.number} closed (not merged)",
+            callback_key=None,
+        )
+
+    if pr_status.kind == PrStatusKind.NOT_INSTALLED:
+        return MenuItemSpec(
+            title=f"⚠️ {repo_name}: PR status — gh not installed", callback_key=None
+        )
+
+    if pr_status.kind == PrStatusKind.NOT_AUTHENTICATED:
+        return MenuItemSpec(
+            title=f"⚠️ {repo_name}: PR status — run gh auth login", callback_key=None
+        )
+
+    if pr_status.kind == PrStatusKind.RATE_LIMITED:
+        if pr_status.retry_at:
+            title = f"⚠️ {repo_name}: PR status — rate limited, retrying at {pr_status.retry_at}"
+        else:
+            title = f"⚠️ {repo_name}: PR status — rate limited"
+        return MenuItemSpec(title=title, callback_key=None)
+
+    # CHECK_FAILED and forward-compat fallback for any other kind — never a
+    # raise/crash (D-11).
     reason = _truncate(pr_status.reason or "unknown error", PR_REASON_CAP)
     return MenuItemSpec(
         title=f"⚠️ {repo_name}: PR status unavailable — {reason}", callback_key=None
