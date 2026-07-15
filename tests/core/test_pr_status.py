@@ -17,7 +17,9 @@ from base_branch_watch.core.models import PrStatusKind
 
 
 def _completed(returncode: int, stdout: str = "", stderr: str = "") -> subprocess.CompletedProcess:
-    return subprocess.CompletedProcess(args=["gh"], returncode=returncode, stdout=stdout, stderr=stderr)
+    return subprocess.CompletedProcess(
+        args=["gh"], returncode=returncode, stdout=stdout, stderr=stderr
+    )
 
 
 def test_check_pr_open_returns_open_kind_with_parsed_fields():
