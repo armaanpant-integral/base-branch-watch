@@ -20,7 +20,7 @@ from AppKit import NSAlert, NSApplication, NSOpenPanel, NSWindowCollectionBehavi
 from base_branch_watch import cli
 from base_branch_watch.app import menu_builder
 from base_branch_watch.core import config, git_ops, log, state
-from base_branch_watch.core.models import MenuItemSpec, RepoStatus, Severity, StatusKind
+from base_branch_watch.core.models import MenuItemSpec, PrStatus, RepoStatus, Severity, StatusKind
 from base_branch_watch.notify.base import Notifier
 from base_branch_watch.notify.osascript_notifier import OsascriptNotifier
 from base_branch_watch.runner import batch
@@ -49,6 +49,14 @@ class BaseBranchWatchApp(rumps.App):
         # mutated in place on subsequent renders, same discipline as
         # _repo_items/_repo_item_keys above (Pitfall 10).
         self._repo_child_items: dict[str, dict[str, rumps.MenuItem]] = {}
+        # PR-status row tracking (D-04/D-05/D-06/D-12) — parallel to the
+        # _repo_items/_repo_item_keys/_repo_child_items trio above, keyed the
+        # same way (by repo_path), same in-place-mutation discipline
+        # (Pitfall 10).
+        self._pr_items: dict[str, rumps.MenuItem] = {}
+        self._pr_item_keys: dict[str, str] = {}
+        self._pr_child_items: dict[str, dict[str, rumps.MenuItem]] = {}
+        self._pr_statuses: dict[str, PrStatus] = {}
         self._empty_item: rumps.MenuItem | None = None
         self._checking = False
         self.remove_menu: rumps.MenuItem | None = None
@@ -134,6 +142,7 @@ class BaseBranchWatchApp(rumps.App):
                 del self.menu[self._repo_item_keys.pop(repo_path)]
                 del self._repo_items[repo_path]
                 self._repo_child_items.pop(repo_path, None)
+            self._remove_pr_row(list(self._pr_items.keys()))
             if self._empty_item is None:
                 self._empty_item = rumps.MenuItem(menu_builder.EMPTY_STATE_TITLE)
                 self.menu.insert_before(ADD_REPO_TITLE, self._empty_item)
@@ -149,9 +158,23 @@ class BaseBranchWatchApp(rumps.App):
                 del self.menu[self._repo_item_keys.pop(repo_path)]
                 del self._repo_items[repo_path]
                 self._repo_child_items.pop(repo_path, None)
+        # PR rows track the same watched-repo set 1:1 (D-01/D-04) — remove
+        # any PR row for a repo no longer watched, parallel to the git-row
+        # cleanup above.
+        stale_pr_repos = [rp for rp in self._pr_items if rp not in current_keys]
+        self._remove_pr_row(stale_pr_repos)
 
         for status, spec in zip(statuses, specs):
             self._render_row(status, spec)
+
+    def _remove_pr_row(self, repo_paths: list[str]) -> None:
+        for repo_path in repo_paths:
+            key = self._pr_item_keys.pop(repo_path, None)
+            if key is not None:
+                del self.menu[key]
+            self._pr_items.pop(repo_path, None)
+            self._pr_child_items.pop(repo_path, None)
+            self._pr_statuses.pop(repo_path, None)
 
     def _render_row(self, status: RepoStatus, spec: MenuItemSpec) -> None:
         item = self._repo_items.get(status.repo_path)
@@ -261,6 +284,72 @@ class BaseBranchWatchApp(rumps.App):
         callers) — the assert documents that contract."""
         assert callback_key is not None
         return callback_key.rsplit("::", 1)[-1]
+
+    # -- PR row (D-05/D-06/D-07/D-02/D-12) ------------------------------------
+
+    def _render_pr_row(self, repo_path: str, spec: MenuItemSpec) -> None:
+        """Insert/mutate the PR-status row for one repo, placed immediately
+        after that repo's git-status row via insert_after (called only after
+        _render(statuses) has already (re)created the git row for repo_path,
+        so self._repo_item_keys[repo_path] is always populated by this
+        point). PR children (Checks/Review/Mergeable, callback_key=None
+        always) are never clickable — unlike the generic
+        _build_submenu_children/_child_key machinery, PR children are keyed
+        by their fixed position (order is locked: Checks, Review, Mergeable —
+        04-UI-SPEC.md), not by title, since a segment's glyph/text can change
+        every poll while its position never does.
+        """
+        item = self._pr_items.get(repo_path)
+        if item is None:
+            # Submenu parent (children present) or flat row (no children) —
+            # never a callback either way (_pr_row never sets callback_key).
+            item = rumps.MenuItem(spec.title)
+            if spec.children:
+                self._pr_child_items[repo_path] = self._build_pr_children(item, spec.children)
+            self._pr_items[repo_path] = item
+            self._pr_item_keys[repo_path] = spec.title
+            anchor = self._repo_item_keys.get(repo_path)
+            if anchor is not None:
+                self.menu.insert_after(anchor, item)
+            else:
+                self.menu.insert_before(ADD_REPO_TITLE, item)
+        else:
+            item.title = spec.title  # mutate in place, never rebuild (Pitfall 10)
+            if spec.children:
+                self._update_pr_children(item, repo_path, spec.children)
+            elif repo_path in self._pr_child_items:
+                # Transitioned from an OPEN row (with children) to a flat
+                # NO_PR/CHECK_FAILED row — drop the now-stale children.
+                if len(item) > 0:
+                    item.clear()
+                self._pr_child_items.pop(repo_path, None)
+
+    @staticmethod
+    def _build_pr_children(
+        parent: rumps.MenuItem, children: list[MenuItemSpec]
+    ) -> list[rumps.MenuItem]:
+        items: list[rumps.MenuItem] = []
+        for child_spec in children:
+            child_item = rumps.MenuItem(child_spec.title)  # never clickable
+            parent.add(child_item)
+            items.append(child_item)
+        return items
+
+    def _update_pr_children(
+        self, parent: rumps.MenuItem, repo_path: str, children: list[MenuItemSpec]
+    ) -> None:
+        """Mutate the 3 fixed-position PR children in place (Pitfall 10).
+        Falls back to a full rebuild only if the CHILD COUNT itself changed
+        (never happens in Plan 01 scope — OPEN always yields exactly 3 — but
+        this keeps the method forward-compatible/never-crashing)."""
+        items = self._pr_child_items.get(repo_path)
+        if items is None or len(items) != len(children):
+            if len(parent) > 0:
+                parent.clear()
+            self._pr_child_items[repo_path] = self._build_pr_children(parent, children)
+            return
+        for item, child_spec in zip(items, children):
+            item.title = child_spec.title
 
     # -- pre-push hook install/uninstall (HOOK-01, D-01/D-03/D-04) -----------
 
@@ -614,11 +703,12 @@ class BaseBranchWatchApp(rumps.App):
             log.rotate_if_needed()
             log.append(f"---- {datetime.datetime.now()} ----")
 
-            statuses = batch.check_all(self.cfg.repos)
+            statuses, pr_statuses = batch.check_all(self.cfg.repos)
             for status in statuses:
                 log.append(self._log_status_line(status))
 
             self.statuses = {status.repo_path: status for status in statuses}
+            self._pr_statuses = pr_statuses
 
             subset = self._compute_notify_subset(statuses)
             if subset:
@@ -626,6 +716,13 @@ class BaseBranchWatchApp(rumps.App):
                 state.save_state(self._state)
 
             self._render(statuses)
+            # PR row is a second, independent row per repo (D-08) — rendered
+            # after the git row so its insert_after anchor already exists.
+            for status in statuses:
+                pr_status = pr_statuses.get(status.repo_path)
+                if pr_status is not None:
+                    pr_spec = menu_builder._pr_row(pr_status, status.name)
+                    self._render_pr_row(status.repo_path, pr_spec)
         except Exception as exc:  # noqa: BLE001 - top-level poll-cycle guard, see CR-04
             # Never let a single bad cycle kill the whole polling loop (the
             # "never raises" convention core/git_ops.py established). Log
