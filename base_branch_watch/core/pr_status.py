@@ -140,3 +140,32 @@ def check_pr(repo_path: str, timeout: int = 15) -> PrStatus:
         merge_state_status=data.get("mergeStateStatus"),
         base_ref=data.get("baseRefName"),
     )
+
+
+def final_state(repo_path: str, number: int, timeout: int = 15) -> PrStatusKind:
+    """D-03 — probe a specific PR's terminal state once it stops matching
+    `check_pr`'s default open-branch lookup (an OPEN -> NO_PR transition).
+
+    Never raises: any failure to invoke/parse, or a state other than MERGED/
+    CLOSED, maps to NO_PR (the caller's natural fallback — this probe is
+    only ever consulted for a one-cycle confirmation, never the primary
+    state source).
+    """
+    if GH is None:
+        return PrStatusKind.NO_PR
+    try:
+        result = _run_gh(repo_path, ["pr", "view", str(number), "--json", "state"], timeout)
+    except (subprocess.TimeoutExpired, OSError):
+        return PrStatusKind.NO_PR
+    if result.returncode != 0:
+        return PrStatusKind.NO_PR
+    try:
+        data = json.loads(result.stdout)
+        state = data.get("state")
+    except json.JSONDecodeError:
+        return PrStatusKind.NO_PR
+    if state == "MERGED":
+        return PrStatusKind.MERGED
+    if state == "CLOSED":
+        return PrStatusKind.CLOSED
+    return PrStatusKind.NO_PR

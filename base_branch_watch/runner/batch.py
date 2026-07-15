@@ -20,12 +20,24 @@ from base_branch_watch.core import git_ops, pr_status
 from base_branch_watch.core.models import PrStatus, RepoConfig, RepoStatus
 
 
-def _check_one(repo: RepoConfig) -> tuple[RepoStatus, PrStatus]:
-    return git_ops.check_repo(repo), pr_status.check_pr(repo.repo_path)
+def _check_one(
+    repo: RepoConfig, pr_repo_paths: set[str] | None
+) -> tuple[RepoStatus, PrStatus | None]:
+    status = git_ops.check_repo(repo)
+    # D-13's ~2min floor gate (Plan 02): when pr_repo_paths is a set, only a
+    # repo whose repo_path is IN it gets a gh call this cycle -- the floor's
+    # scheduling decision lives in app/menubar.py, this is purely mechanical.
+    # None (default) preserves Plan 01 behavior: every repo gets a check_pr
+    # call, no gate.
+    if pr_repo_paths is not None and repo.repo_path not in pr_repo_paths:
+        return status, None
+    return status, pr_status.check_pr(repo.repo_path)
 
 
 def check_all(
-    repos: list[RepoConfig], max_workers: int = 8
+    repos: list[RepoConfig],
+    max_workers: int = 8,
+    pr_repo_paths: set[str] | None = None,
 ) -> tuple[list[RepoStatus], dict[str, PrStatus]]:
     """Fan out per-repo git-status + PR-status checks via a bounded thread pool.
 
@@ -35,6 +47,12 @@ def check_all(
     RepoStatus (via RepoStatus.failed) paired with a CHECK_FAILED PrStatus
     (via PrStatus.failed) rather than propagating and killing the whole batch
     (Pitfall 8 / T-4-03 / D-11).
+
+    pr_repo_paths (Plan 02, D-13): when a set, only repos whose repo_path is
+    a member get a check_pr call this cycle; repos outside the set are
+    omitted from the returned pr_statuses dict entirely (their RepoStatus
+    git check still runs normally). None (default) keeps every repo getting
+    a check_pr call, unchanged from Plan 01.
     """
     if not repos:
         return [], {}
@@ -42,7 +60,7 @@ def check_all(
     results: list[RepoStatus] = []
     pr_statuses: dict[str, PrStatus] = {}
     with ThreadPoolExecutor(max_workers=min(max_workers, len(repos))) as pool:
-        futures = {pool.submit(_check_one, repo): repo for repo in repos}
+        futures = {pool.submit(_check_one, repo, pr_repo_paths): repo for repo in repos}
         for future in as_completed(futures):
             repo = futures[future]
             try:
@@ -51,5 +69,6 @@ def check_all(
                 status = RepoStatus.failed(repo, str(exc))
                 pr = PrStatus.failed(str(exc))
             results.append(status)
-            pr_statuses[repo.repo_path] = pr
+            if pr is not None:
+                pr_statuses[repo.repo_path] = pr
     return results, pr_statuses

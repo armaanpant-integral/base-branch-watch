@@ -13,14 +13,22 @@ import datetime
 import os
 import subprocess
 import sys
+import time
 
 import rumps
 from AppKit import NSAlert, NSApplication, NSOpenPanel, NSWindowCollectionBehaviorCanJoinAllSpaces
 
 from base_branch_watch import cli
 from base_branch_watch.app import menu_builder
-from base_branch_watch.core import config, git_ops, log, state
-from base_branch_watch.core.models import MenuItemSpec, PrStatus, RepoStatus, Severity, StatusKind
+from base_branch_watch.core import config, git_ops, log, pr_status, state
+from base_branch_watch.core.models import (
+    MenuItemSpec,
+    PrStatus,
+    PrStatusKind,
+    RepoStatus,
+    Severity,
+    StatusKind,
+)
 from base_branch_watch.notify.base import Notifier
 from base_branch_watch.notify.osascript_notifier import OsascriptNotifier
 from base_branch_watch.runner import batch
@@ -32,6 +40,15 @@ SET_INTERVAL_TITLE = "Set Interval…"
 REFRESH_TITLE = "Refresh Now"
 OPEN_LOG_TITLE = "Open Log"
 QUIT_TITLE = "Quit"
+
+# D-13 (04-pr-status Plan 02): gh PR-status calls are clamped to this floor
+# regardless of the configured git-status poll interval -- CI/review state
+# doesn't meaningfully change on a 30s cadence, and a gh call is a network
+# round-trip while git fetch is cheap and local. Lives here (not core/batch),
+# per RESEARCH.md's Architectural Responsibility Map: the floor is a
+# scheduling decision the app owns, batch.check_all only mechanically
+# honors the eligible-repo set this constant produces.
+PR_CHECK_FLOOR_SECONDS = 120
 
 
 class BaseBranchWatchApp(rumps.App):
@@ -57,6 +74,12 @@ class BaseBranchWatchApp(rumps.App):
         self._pr_item_keys: dict[str, str] = {}
         self._pr_child_items: dict[str, dict[str, rumps.MenuItem]] = {}
         self._pr_statuses: dict[str, PrStatus] = {}
+        # D-13's ~2min PR-check floor (Plan 02) — in-memory only (Open
+        # Question 1's recommendation, not persisted to core/state.py):
+        # resets on restart, acceptable for a handful of idempotent
+        # read-only gh calls. repo_path -> time.monotonic() of its last
+        # eligible gh call.
+        self._last_pr_checked_at: dict[str, float] = {}
         self._empty_item: rumps.MenuItem | None = None
         self._checking = False
         self.remove_menu: rumps.MenuItem | None = None
@@ -694,6 +717,45 @@ class BaseBranchWatchApp(rumps.App):
             suffix = f"{bs.behind} behind ({bs.base})"
         return f"[OK] {status.name}: {suffix}"
 
+    def _merge_pr_statuses(
+        self, statuses: list[RepoStatus], fresh_pr_statuses: dict[str, PrStatus]
+    ) -> dict[str, PrStatus]:
+        """D-13 retention + D-03 one-cycle MERGED/CLOSED transition.
+
+        For each currently-watched repo: if this cycle fetched a fresh
+        PrStatus (repo was PR-eligible), use it -- unless it's a fresh
+        NO_PR immediately following a stored OPEN with a PR number, in
+        which case probe core.pr_status.final_state once; a MERGED/CLOSED
+        result renders for this one cycle only (the NEXT cycle's stored
+        value is already NO_PR, so it naturally falls back, D-03). If this
+        cycle was NOT PR-eligible (repo absent from fresh_pr_statuses),
+        retain the prior stored value unchanged (no stale-data indicator,
+        per 04-UI-SPEC.md's polling note).
+        """
+        merged: dict[str, PrStatus] = {}
+        for status in statuses:
+            repo_path = status.repo_path
+            if repo_path not in fresh_pr_statuses:
+                prev = self._pr_statuses.get(repo_path)
+                if prev is not None:
+                    merged[repo_path] = prev
+                continue
+
+            fresh = fresh_pr_statuses[repo_path]
+            prev = self._pr_statuses.get(repo_path)
+            if (
+                fresh.kind == PrStatusKind.NO_PR
+                and prev is not None
+                and prev.kind == PrStatusKind.OPEN
+                and prev.number is not None
+            ):
+                probed_kind = pr_status.final_state(repo_path, prev.number)
+                if probed_kind in (PrStatusKind.MERGED, PrStatusKind.CLOSED):
+                    merged[repo_path] = PrStatus(kind=probed_kind, number=prev.number)
+                    continue
+            merged[repo_path] = fresh
+        return merged
+
     def check_all(self, _sender) -> None:
         if self._checking:
             return
@@ -703,12 +765,22 @@ class BaseBranchWatchApp(rumps.App):
             log.rotate_if_needed()
             log.append(f"---- {datetime.datetime.now()} ----")
 
-            statuses, pr_statuses = batch.check_all(self.cfg.repos)
+            now = time.monotonic()
+            pr_eligible = {
+                repo.repo_path
+                for repo in self.cfg.repos
+                if (now - self._last_pr_checked_at.get(repo.repo_path, 0.0))
+                >= PR_CHECK_FLOOR_SECONDS
+            }
+
+            statuses, fresh_pr_statuses = batch.check_all(self.cfg.repos, pr_repo_paths=pr_eligible)
             for status in statuses:
                 log.append(self._log_status_line(status))
 
             self.statuses = {status.repo_path: status for status in statuses}
-            self._pr_statuses = pr_statuses
+            for repo_path in pr_eligible:
+                self._last_pr_checked_at[repo_path] = now
+            self._pr_statuses = self._merge_pr_statuses(statuses, fresh_pr_statuses)
 
             subset = self._compute_notify_subset(statuses)
             if subset:
@@ -719,9 +791,9 @@ class BaseBranchWatchApp(rumps.App):
             # PR row is a second, independent row per repo (D-08) — rendered
             # after the git row so its insert_after anchor already exists.
             for status in statuses:
-                pr_status = pr_statuses.get(status.repo_path)
-                if pr_status is not None:
-                    pr_spec = menu_builder._pr_row(pr_status, status.name)
+                pr_status_for_repo = self._pr_statuses.get(status.repo_path)
+                if pr_status_for_repo is not None:
+                    pr_spec = menu_builder._pr_row(pr_status_for_repo, status.name)
                     self._render_pr_row(status.repo_path, pr_spec)
         except Exception as exc:  # noqa: BLE001 - top-level poll-cycle guard, see CR-04
             # Never let a single bad cycle kill the whole polling loop (the
