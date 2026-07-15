@@ -13,6 +13,7 @@ None` is itself the NOT_INSTALLED sentinel trigger.
 
 from __future__ import annotations
 
+import datetime
 import json
 import shutil
 import subprocess
@@ -59,12 +60,38 @@ def _checks_counts(repo_path: str, timeout: int) -> tuple[int, int, int, int]:
     return (checks_pass, checks_fail, checks_pending, len(buckets))
 
 
+def rate_limit_reset_text(timeout: int = 10) -> str | None:
+    """`gh api rate_limit`'s graphql.reset epoch -> local "HH:MM" string.
+
+    `gh pr view`/`gh pr checks` use the GraphQL endpoint (RESEARCH.md,
+    verified live via a forced-bad-token 401 against the graphql URL), so
+    the graphql resource — not core — is the relevant quota. Never raises;
+    returns None on any failure (D-10's reset time is best-effort).
+    """
+    if GH is None:
+        return None
+    try:
+        result = subprocess.run(
+            [GH, "api", "rate_limit"], capture_output=True, text=True, timeout=timeout
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        data = json.loads(result.stdout)
+        reset_epoch = data["resources"]["graphql"]["reset"]
+    except (json.JSONDecodeError, KeyError):
+        return None
+    return datetime.datetime.fromtimestamp(reset_epoch).strftime("%H:%M")
+
+
 def check_pr(repo_path: str, timeout: int = 15) -> PrStatus:
     """Fetch the current branch's PR state via `gh`. Never raises.
 
-    Distinguishes OPEN / NO_PR / NOT_INSTALLED / CHECK_FAILED (D-09/D-11 —
-    NOT_AUTHENTICATED/RATE_LIMITED refinement is Plan 02 scope; any other
-    nonzero exit here falls into CHECK_FAILED for this plan).
+    Distinguishes OPEN / NO_PR / NOT_INSTALLED / NOT_AUTHENTICATED /
+    RATE_LIMITED / CHECK_FAILED (D-09/D-10/D-11) — five distinct
+    failure/absence sentinels, never a generic catch-all.
     """
     if GH is None:
         return PrStatus(kind=PrStatusKind.NOT_INSTALLED)
@@ -76,12 +103,22 @@ def check_pr(repo_path: str, timeout: int = 15) -> PrStatus:
     except OSError as exc:
         return PrStatus.failed(str(exc))
 
+    if result.returncode == 4:
+        # Verified live (RESEARCH.md): auth-required gh commands exit 4.
+        return PrStatus(kind=PrStatusKind.NOT_AUTHENTICATED)
+
     if result.returncode != 0:
         stderr = result.stderr.strip()
         if "no pull requests found" in stderr:
             return PrStatus(
                 kind=PrStatusKind.NO_PR,
                 current_branch=git_ops.current_branch(repo_path),
+            )
+        if "API rate limit" in stderr or "rate limit" in stderr.lower():
+            return PrStatus(
+                kind=PrStatusKind.RATE_LIMITED,
+                retry_at=rate_limit_reset_text(),
+                reason=stderr[:200],
             )
         return PrStatus.failed(stderr or "gh pr view failed")
 
@@ -103,3 +140,32 @@ def check_pr(repo_path: str, timeout: int = 15) -> PrStatus:
         merge_state_status=data.get("mergeStateStatus"),
         base_ref=data.get("baseRefName"),
     )
+
+
+def final_state(repo_path: str, number: int, timeout: int = 15) -> PrStatusKind:
+    """D-03 — probe a specific PR's terminal state once it stops matching
+    `check_pr`'s default open-branch lookup (an OPEN -> NO_PR transition).
+
+    Never raises: any failure to invoke/parse, or a state other than MERGED/
+    CLOSED, maps to NO_PR (the caller's natural fallback — this probe is
+    only ever consulted for a one-cycle confirmation, never the primary
+    state source).
+    """
+    if GH is None:
+        return PrStatusKind.NO_PR
+    try:
+        result = _run_gh(repo_path, ["pr", "view", str(number), "--json", "state"], timeout)
+    except (subprocess.TimeoutExpired, OSError):
+        return PrStatusKind.NO_PR
+    if result.returncode != 0:
+        return PrStatusKind.NO_PR
+    try:
+        data = json.loads(result.stdout)
+        state = data.get("state")
+    except json.JSONDecodeError:
+        return PrStatusKind.NO_PR
+    if state == "MERGED":
+        return PrStatusKind.MERGED
+    if state == "CLOSED":
+        return PrStatusKind.CLOSED
+    return PrStatusKind.NO_PR

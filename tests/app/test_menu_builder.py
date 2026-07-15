@@ -500,3 +500,66 @@ def test_pr_row_check_failed_truncates_long_reason_to_50_chars():
     reason_segment = spec.title.split("— ", 1)[1]
     assert len(reason_segment) <= 51
     assert reason_segment.endswith("…")
+
+
+# -- Task 2 (Plan 02): remaining PrStatusKind rows — locked UI-SPEC strings --
+
+
+def test_pr_row_not_installed_locked_string():
+    status = _pr_status(kind=PrStatusKind.NOT_INSTALLED)
+
+    spec = menu_builder._pr_row(status, "repo")
+
+    assert spec.title == "⚠️ repo: PR status — gh not installed"
+    assert spec.callback_key is None
+    assert spec.children == []
+
+
+def test_pr_row_not_authenticated_locked_string():
+    status = _pr_status(kind=PrStatusKind.NOT_AUTHENTICATED)
+
+    spec = menu_builder._pr_row(status, "repo")
+
+    assert spec.title == "⚠️ repo: PR status — run gh auth login"
+    assert spec.callback_key is None
+    assert spec.children == []
+
+
+def test_pr_row_rate_limited_with_retry_at_locked_string():
+    status = PrStatus(kind=PrStatusKind.RATE_LIMITED, retry_at="14:30")
+
+    spec = menu_builder._pr_row(status, "repo")
+
+    assert spec.title == "⚠️ repo: PR status — rate limited, retrying at 14:30"
+    assert spec.callback_key is None
+    assert spec.children == []
+
+
+def test_pr_row_rate_limited_without_retry_at_omits_gracefully():
+    status = PrStatus(kind=PrStatusKind.RATE_LIMITED, retry_at=None)
+
+    spec = menu_builder._pr_row(status, "repo")
+
+    assert spec.title == "⚠️ repo: PR status — rate limited"
+    assert "None" not in spec.title
+    assert "at " not in spec.title
+
+
+def test_pr_row_merged_locked_string():
+    status = PrStatus(kind=PrStatusKind.MERGED, number=42)
+
+    spec = menu_builder._pr_row(status, "repo")
+
+    assert spec.title == "✅ repo: PR #42 merged"
+    assert spec.callback_key is None
+    assert spec.children == []
+
+
+def test_pr_row_closed_locked_string():
+    status = PrStatus(kind=PrStatusKind.CLOSED, number=7)
+
+    spec = menu_builder._pr_row(status, "repo")
+
+    assert spec.title == "⚫ repo: PR #7 closed (not merged)"
+    assert spec.callback_key is None
+    assert spec.children == []

@@ -151,6 +151,48 @@ def test_check_all_empty_repo_list_returns_empty_list_without_pool():
     mock_pool_cls.assert_not_called()
 
 
+# -- Task 3 (Plan 02): pr_repo_paths gate (D-13's floor lives in menubar.py,
+# batch only mechanically honors the passed-in eligible set). --------------
+
+
+def test_check_all_pr_repo_paths_gate_limits_check_pr_to_eligible_repo_only():
+    repos = [
+        RepoConfig(repo_path="/tmp/eligible", base_branches=["main"]),
+        RepoConfig(repo_path="/tmp/excluded", base_branches=["main"]),
+    ]
+    calls: list[str] = []
+
+    def pr_side_effect(repo_path: str):
+        calls.append(repo_path)
+        return _fake_pr_status(repo_path)
+
+    with patch(
+        "base_branch_watch.runner.batch.git_ops.check_repo", side_effect=_fake_status
+    ), patch("base_branch_watch.runner.batch.pr_status.check_pr", side_effect=pr_side_effect):
+        results, pr_statuses = batch.check_all(repos, pr_repo_paths={"/tmp/eligible"})
+
+    assert calls == ["/tmp/eligible"]
+    assert set(pr_statuses.keys()) == {"/tmp/eligible"}
+    # Git-status check still runs for both repos -- only the gh call is gated.
+    assert {r.repo_path for r in results} == {"/tmp/eligible", "/tmp/excluded"}
+
+
+def test_check_all_pr_repo_paths_none_default_checks_every_repo():
+    repos = [
+        RepoConfig(repo_path="/tmp/r1", base_branches=["main"]),
+        RepoConfig(repo_path="/tmp/r2", base_branches=["main"]),
+    ]
+    with patch(
+        "base_branch_watch.runner.batch.git_ops.check_repo", side_effect=_fake_status
+    ), patch(
+        "base_branch_watch.runner.batch.pr_status.check_pr", side_effect=_fake_pr_status
+    ) as mock_pr:
+        results, pr_statuses = batch.check_all(repos)
+
+    assert mock_pr.call_count == 2
+    assert set(pr_statuses.keys()) == {"/tmp/r1", "/tmp/r2"}
+
+
 def test_batch_module_is_pure_no_rumps_or_appkit_import():
     import base_branch_watch.runner.batch as batch_module
 

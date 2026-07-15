@@ -436,6 +436,87 @@ def test_render_pr_row_no_pr_flat_row_no_children(app):
     assert status.repo_path not in app._pr_child_items
 
 
+# -- Task 3 (Plan 02): ~2min PR-check floor + MERGED/CLOSED one-cycle
+# transition (D-13/D-03) ------------------------------------------------------
+
+
+def test_check_all_pr_floor_skips_second_call_within_2min_but_retains_row(app):
+    status = _status(
+        "myrepo",
+        branch_statuses=[
+            BranchStatus(base="main", behind=0, ahead_of_base=0, kind=StatusKind.UP_TO_DATE)
+        ],
+    )
+    app.cfg.repos = [RepoConfig(repo_path=status.repo_path, base_branches=["main"])]
+    pr_result = PrStatus(kind=PrStatusKind.NO_PR, current_branch="main")
+
+    with patch(
+        "base_branch_watch.runner.batch.git_ops.check_repo", return_value=status
+    ), patch(
+        "base_branch_watch.runner.batch.pr_status.check_pr", return_value=pr_result
+    ) as mock_check_pr:
+        app.check_all(None)
+        app.check_all(None)
+
+    assert mock_check_pr.call_count == 1, "second cycle within the 2min floor must not re-call gh"
+    assert app._pr_items[status.repo_path].title == "⚪ myrepo: no open PR (main)"
+
+
+def test_check_all_open_to_no_pr_transition_renders_merged_for_one_cycle_then_falls_back(app):
+    status = _status(
+        "myrepo",
+        branch_statuses=[
+            BranchStatus(base="main", behind=0, ahead_of_base=0, kind=StatusKind.UP_TO_DATE)
+        ],
+    )
+    app.cfg.repos = [RepoConfig(repo_path=status.repo_path, base_branches=["main"])]
+
+    open_status = PrStatus(
+        kind=PrStatusKind.OPEN,
+        number=7,
+        checks_pass=3,
+        checks_total=3,
+        review_decision="APPROVED",
+        merge_state_status="CLEAN",
+    )
+    no_pr_status = PrStatus(kind=PrStatusKind.NO_PR, current_branch="main")
+
+    with patch(
+        "base_branch_watch.app.menubar.batch.check_all",
+        return_value=([status], {status.repo_path: open_status}),
+    ):
+        app.check_all(None)
+    assert app._pr_statuses[status.repo_path].kind == PrStatusKind.OPEN
+
+    # Force PR-check eligibility for the next cycle (bypass the 2min floor
+    # in this fast-running test -- the floor itself is covered by the
+    # dedicated floor test above).
+    app._last_pr_checked_at[status.repo_path] = 0.0
+
+    with patch(
+        "base_branch_watch.app.menubar.batch.check_all",
+        return_value=([status], {status.repo_path: no_pr_status}),
+    ), patch(
+        "base_branch_watch.app.menubar.pr_status.final_state", return_value=PrStatusKind.MERGED
+    ):
+        app.check_all(None)
+
+    assert app._pr_statuses[status.repo_path].kind == PrStatusKind.MERGED
+    assert app._pr_statuses[status.repo_path].number == 7
+    assert app._pr_items[status.repo_path].title == "✅ myrepo: PR #7 merged"
+
+    app._last_pr_checked_at[status.repo_path] = 0.0
+
+    with patch(
+        "base_branch_watch.app.menubar.batch.check_all",
+        return_value=([status], {status.repo_path: no_pr_status}),
+    ):
+        app.check_all(None)
+
+    assert app._pr_statuses[status.repo_path].kind == PrStatusKind.NO_PR
+    assert app._pr_items[status.repo_path].title == "⚪ myrepo: no open PR (main)"
+
+
 def test_check_all_renders_pr_row_from_fake_batch_result_without_raising(app, monkeypatch):
     """A fake batch.check_all result (RepoStatus + PrStatus per repo) must
     render a PR row into self._pr_items per repo without raising — the exact
