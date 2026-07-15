@@ -110,11 +110,12 @@ def test_check_all_isolates_per_repo_exception_as_check_failed_status():
 
 
 def test_check_all_isolates_per_repo_pr_status_exception_as_check_failed():
-    """A pr_status.check_pr exception isolates to THAT REPO'S pair of
-    statuses — RepoStatus.failed + PrStatus.failed, per the plan's per-future
-    try/except (the git+gh calls share one worker future per repo, so an
-    exception from either call fails both statuses for that repo only; the
-    OTHER repo's pair is entirely unaffected) — D-11."""
+    """WR-01 fix: a pr_status.check_pr exception isolates to ONLY that
+    repo's PrStatus — the repo's already-successfully-computed RepoStatus
+    (git axis) is NOT discarded, since the two calls are wrapped in
+    independent try/except blocks inside _check_one (D-08: PR status must
+    never degrade git-status severity). The OTHER repo's pair is entirely
+    unaffected — D-11."""
     repos = [
         RepoConfig(repo_path="/tmp/good", base_branches=["main"]),
         RepoConfig(repo_path="/tmp/bad-pr", base_branches=["main"]),
@@ -134,12 +135,37 @@ def test_check_all_isolates_per_repo_pr_status_exception_as_check_failed():
     # The OTHER repo's pair is entirely unaffected by /tmp/bad-pr's failure.
     assert by_path["/tmp/good"].worst_kind != StatusKind.CHECK_FAILED
     assert pr_statuses["/tmp/good"].kind == PrStatusKind.NO_PR
-    # /tmp/bad-pr's gh-side exception fails BOTH its RepoStatus and PrStatus,
-    # since they share one worker future per repo (matches the plan's
-    # explicit per-future try/except pairing, not per-axis isolation).
-    assert by_path["/tmp/bad-pr"].worst_kind == StatusKind.CHECK_FAILED
+    # /tmp/bad-pr's gh-side exception fails ONLY its PrStatus -- its
+    # RepoStatus (git axis) is untouched since git_ops.check_repo succeeded.
+    assert by_path["/tmp/bad-pr"].worst_kind != StatusKind.CHECK_FAILED
     assert pr_statuses["/tmp/bad-pr"].kind == PrStatusKind.CHECK_FAILED
     assert pr_statuses["/tmp/bad-pr"].reason is not None
+
+
+def test_check_all_isolates_git_exception_without_affecting_pr_status():
+    """WR-01 fix, symmetric case: a git_ops.check_repo exception isolates
+    to ONLY that repo's RepoStatus -- its PrStatus is still attempted and
+    unaffected by the git-side failure."""
+    repos = [
+        RepoConfig(repo_path="/tmp/good", base_branches=["main"]),
+        RepoConfig(repo_path="/tmp/bad-git", base_branches=["main"]),
+    ]
+
+    def git_side_effect(repo: RepoConfig) -> RepoStatus:
+        if repo.repo_path == "/tmp/bad-git":
+            raise RuntimeError("git exploded")
+        return _fake_status(repo)
+
+    with patch(
+        "base_branch_watch.runner.batch.git_ops.check_repo", side_effect=git_side_effect
+    ), patch("base_branch_watch.runner.batch.pr_status.check_pr", side_effect=_fake_pr_status):
+        results, pr_statuses = batch.check_all(repos)
+
+    by_path = {r.repo_path: r for r in results}
+    assert by_path["/tmp/bad-git"].worst_kind == StatusKind.CHECK_FAILED
+    # PrStatus for the git-failed repo is untouched -- still the fake NO_PR,
+    # not CHECK_FAILED, since the PR call never raised.
+    assert pr_statuses["/tmp/bad-git"].kind == PrStatusKind.NO_PR
 
 
 def test_check_all_empty_repo_list_returns_empty_list_without_pool():

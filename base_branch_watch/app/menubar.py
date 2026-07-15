@@ -723,14 +723,28 @@ class BaseBranchWatchApp(rumps.App):
         """D-13 retention + D-03 one-cycle MERGED/CLOSED transition.
 
         For each currently-watched repo: if this cycle fetched a fresh
-        PrStatus (repo was PR-eligible), use it -- unless it's a fresh
-        NO_PR immediately following a stored OPEN with a PR number, in
-        which case probe core.pr_status.final_state once; a MERGED/CLOSED
-        result renders for this one cycle only (the NEXT cycle's stored
-        value is already NO_PR, so it naturally falls back, D-03). If this
-        cycle was NOT PR-eligible (repo absent from fresh_pr_statuses),
-        retain the prior stored value unchanged (no stale-data indicator,
-        per 04-UI-SPEC.md's polling note).
+        PrStatus (repo was PR-eligible), use it, subject to two one-cycle
+        collapse routes so a terminal PR only shows MERGED/CLOSED once
+        (D-03) rather than indefinitely:
+
+        Route A -- `gh pr view` stops finding the PR entirely (its branch
+        was deleted after merge/close): a fresh NO_PR immediately following
+        a stored OPEN with a PR number probes core.pr_status.final_state
+        once; a MERGED/CLOSED result renders for this one cycle only (the
+        NEXT cycle's stored value is already NO_PR, so it naturally falls
+        back).
+
+        Route B -- `gh pr view` KEEPS finding the PR and reports it
+        MERGED/CLOSED directly (branch still exists on GitHub after merge --
+        CR-01, verified live: this is the common case, not the exception).
+        First cycle: show the fresh MERGED/CLOSED. If the STORED value was
+        already the same MERGED/CLOSED PR (i.e. this is the second+ cycle
+        seeing the same terminal PR), collapse to NO_PR instead so the
+        one-cycle confirmation doesn't linger.
+
+        If this cycle was NOT PR-eligible (repo absent from
+        fresh_pr_statuses), retain the prior stored value unchanged (no
+        stale-data indicator, per 04-UI-SPEC.md's polling note).
         """
         merged: dict[str, PrStatus] = {}
         for status in statuses:
@@ -743,6 +757,8 @@ class BaseBranchWatchApp(rumps.App):
 
             fresh = fresh_pr_statuses[repo_path]
             prev = self._pr_statuses.get(repo_path)
+
+            # Route A: branch disappeared from gh's lookup entirely.
             if (
                 fresh.kind == PrStatusKind.NO_PR
                 and prev is not None
@@ -753,6 +769,19 @@ class BaseBranchWatchApp(rumps.App):
                 if probed_kind in (PrStatusKind.MERGED, PrStatusKind.CLOSED):
                     merged[repo_path] = PrStatus(kind=probed_kind, number=prev.number)
                     continue
+
+            # Route B: branch still exists; gh keeps reporting the same
+            # terminal PR. Collapse to NO_PR after the first confirmation.
+            if fresh.kind in (PrStatusKind.MERGED, PrStatusKind.CLOSED):
+                if prev is not None and prev.kind == fresh.kind and prev.number == fresh.number:
+                    merged[repo_path] = PrStatus(
+                        kind=PrStatusKind.NO_PR,
+                        current_branch=git_ops.current_branch(repo_path),
+                    )
+                else:
+                    merged[repo_path] = fresh
+                continue
+
             merged[repo_path] = fresh
         return merged
 
@@ -769,7 +798,12 @@ class BaseBranchWatchApp(rumps.App):
             pr_eligible = {
                 repo.repo_path
                 for repo in self.cfg.repos
-                if (now - self._last_pr_checked_at.get(repo.repo_path, 0.0))
+                # WR-03: float("-inf") sentinel, not 0.0 -- time.monotonic()'s
+                # reference point is unspecified (effectively system uptime on
+                # macOS/CPython), so a machine rebooted <2min before launch
+                # would otherwise have every repo incorrectly excluded from
+                # this very first cycle's eligible set.
+                if (now - self._last_pr_checked_at.get(repo.repo_path, float("-inf")))
                 >= PR_CHECK_FLOOR_SECONDS
             }
 

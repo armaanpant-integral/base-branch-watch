@@ -517,6 +517,46 @@ def test_check_all_open_to_no_pr_transition_renders_merged_for_one_cycle_then_fa
     assert app._pr_items[status.repo_path].title == "⚪ myrepo: no open PR (main)"
 
 
+def test_check_all_merged_pr_still_found_by_gh_renders_once_then_collapses_to_no_pr(app):
+    """CR-01/Route B regression: `gh pr view` keeps resolving to the same
+    MERGED PR directly (branch not deleted) rather than falling through to
+    NO_PR. The MERGED row must still show for exactly one cycle (D-03) --
+    the SECOND cycle seeing the same terminal PR number must collapse to
+    NO_PR rather than repeating "PR merged" indefinitely."""
+    status = _status(
+        "myrepo",
+        branch_statuses=[
+            BranchStatus(base="main", behind=0, ahead_of_base=0, kind=StatusKind.UP_TO_DATE)
+        ],
+    )
+    app.cfg.repos = [RepoConfig(repo_path=status.repo_path, base_branches=["main"])]
+
+    merged_status = PrStatus(kind=PrStatusKind.MERGED, number=7)
+
+    with patch(
+        "base_branch_watch.app.menubar.batch.check_all",
+        return_value=([status], {status.repo_path: merged_status}),
+    ):
+        app.check_all(None)
+
+    assert app._pr_statuses[status.repo_path].kind == PrStatusKind.MERGED
+    assert app._pr_items[status.repo_path].title == "✅ myrepo: PR #7 merged"
+
+    app._last_pr_checked_at[status.repo_path] = 0.0
+    with patch(
+        "base_branch_watch.app.menubar.batch.check_all",
+        # gh STILL reports the same merged PR directly -- branch never
+        # disappeared, so batch.check_all never returns NO_PR here.
+        return_value=([status], {status.repo_path: PrStatus(kind=PrStatusKind.MERGED, number=7)}),
+    ), patch(
+        "base_branch_watch.app.menubar.git_ops.current_branch", return_value="main"
+    ):
+        app.check_all(None)
+
+    assert app._pr_statuses[status.repo_path].kind == PrStatusKind.NO_PR
+    assert app._pr_items[status.repo_path].title == "⚪ myrepo: no open PR (main)"
+
+
 def test_check_all_renders_pr_row_from_fake_batch_result_without_raising(app, monkeypatch):
     """A fake batch.check_all result (RepoStatus + PrStatus per repo) must
     render a PR row into self._pr_items per repo without raising — the exact

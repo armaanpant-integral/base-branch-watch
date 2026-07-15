@@ -9,7 +9,10 @@ and per-repo failure isolation, it does not retry anything itself.
 D-12 (04-pr-status Plan 01): PR status is fetched via core.pr_status.check_pr
 in the SAME pool as the git-status check, one extra `gh` call per repo, no
 second concurrency mechanism. A gh failure isolates to that repo's PrStatus
-(D-11) exactly like a git failure isolates to that repo's RepoStatus.
+(D-11) INDEPENDENTLY of that repo's RepoStatus (WR-01 fix) — the two calls
+are wrapped in separate try/except blocks inside _check_one so a failure on
+either axis never discards an already-successfully-computed result on the
+other (D-08: PR status must never degrade git-status severity).
 """
 
 from __future__ import annotations
@@ -23,7 +26,15 @@ from base_branch_watch.core.models import PrStatus, RepoConfig, RepoStatus
 def _check_one(
     repo: RepoConfig, pr_repo_paths: set[str] | None
 ) -> tuple[RepoStatus, PrStatus | None]:
-    status = git_ops.check_repo(repo)
+    # WR-01: git-status and PR-status are isolated independently -- an
+    # exception on EITHER axis must never discard an already-successfully-
+    # computed result on the OTHER axis (D-08: PR status is purely
+    # informational and must never degrade git-status severity).
+    try:
+        status = git_ops.check_repo(repo)
+    except Exception as exc:  # noqa: BLE001 - isolate git-side failure from PR status
+        status = RepoStatus.failed(repo, str(exc))
+
     # D-13's ~2min floor gate (Plan 02): when pr_repo_paths is a set, only a
     # repo whose repo_path is IN it gets a gh call this cycle -- the floor's
     # scheduling decision lives in app/menubar.py, this is purely mechanical.
@@ -31,7 +42,12 @@ def _check_one(
     # call, no gate.
     if pr_repo_paths is not None and repo.repo_path not in pr_repo_paths:
         return status, None
-    return status, pr_status.check_pr(repo.repo_path)
+
+    try:
+        pr = pr_status.check_pr(repo.repo_path)
+    except Exception as exc:  # noqa: BLE001 - isolate PR-side failure from git status (D-11)
+        pr = PrStatus.failed(str(exc))
+    return status, pr
 
 
 def check_all(
@@ -43,10 +59,14 @@ def check_all(
 
     Worker count is capped at min(max_workers, len(repos)) — never exceeds the
     repo count, and the empty-list guard avoids ever constructing a
-    zero-worker pool. A per-repo exception is isolated to a CHECK_FAILED
-    RepoStatus (via RepoStatus.failed) paired with a CHECK_FAILED PrStatus
-    (via PrStatus.failed) rather than propagating and killing the whole batch
-    (Pitfall 8 / T-4-03 / D-11).
+    zero-worker pool. Each axis's exception is isolated independently inside
+    _check_one (WR-01): a git-side failure only replaces that repo's
+    RepoStatus (via RepoStatus.failed), a PR-side failure only replaces that
+    repo's PrStatus (via PrStatus.failed) — neither propagates to kill the
+    whole batch (Pitfall 8 / T-4-03 / D-11), and neither axis's failure
+    corrupts the other's already-computed result. The outer try/except here
+    remains a defensive backstop for infrastructure-level future failures
+    (e.g. pool cancellation), not the primary isolation mechanism.
 
     pr_repo_paths (Plan 02, D-13): when a set, only repos whose repo_path is
     a member get a check_pr call this cycle; repos outside the set are

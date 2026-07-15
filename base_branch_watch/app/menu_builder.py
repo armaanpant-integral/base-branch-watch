@@ -171,6 +171,12 @@ def _checks_segment(status: PrStatus) -> tuple[str, str, str]:
     passed = status.checks_pass
     fail = status.checks_fail
     pending = status.checks_pending
+    if total == -1:
+        # WR-04: distinct from "genuinely zero checks configured" (total ==
+        # 0) -- this is core.pr_status._checks_counts's invocation-failure
+        # sentinel, not a real empty bucket list. Never silently claim "no
+        # checks configured" for what was actually a fetch failure.
+        return "⚠️", "checks unavailable", "checks unavailable — fetch failed"
     if total == 0:
         return "—", "no checks", "no checks configured"
     if fail > 0:
@@ -249,7 +255,14 @@ def _pr_row(pr_status: PrStatus, repo_name: str) -> MenuItemSpec:
         return MenuItemSpec(title=title, callback_key=None, children=children)
 
     if pr_status.kind == PrStatusKind.NO_PR:
-        branch = _truncate(pr_status.current_branch or "", PR_BRANCH_NAME_CAP)
+        # IN-02: fall back to a placeholder rather than rendering empty
+        # parens when current_branch is falsy (e.g. detached HEAD, or a
+        # failed git_ops.current_branch lookup).
+        branch = (
+            _truncate(pr_status.current_branch, PR_BRANCH_NAME_CAP)
+            if pr_status.current_branch
+            else "detached HEAD"
+        )
         return MenuItemSpec(title=f"⚪ {repo_name}: no open PR ({branch})", callback_key=None)
 
     if pr_status.kind == PrStatusKind.MERGED:

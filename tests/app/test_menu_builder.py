@@ -421,6 +421,35 @@ def test_pr_row_open_no_checks_configured():
     assert spec.children[0].title == "— Checks: no checks configured"
 
 
+def test_pr_row_open_checks_fetch_unavailable_is_distinct_from_no_checks():
+    """WR-04 regression: checks_total == -1 (core.pr_status's invocation-
+    failure sentinel) must render as "unavailable", never silently claim
+    "no checks configured" like the genuine checks_total == 0 case."""
+    status = _pr_status(
+        kind=PrStatusKind.OPEN,
+        checks_pass=0,
+        checks_fail=0,
+        checks_pending=0,
+        checks_total=-1,
+    )
+
+    spec = menu_builder._pr_row(status, "base-branch-watch")
+
+    assert "checks unavailable" in spec.title
+    assert "no checks configured" not in spec.title
+    assert spec.children[0].title == "⚠️ Checks: checks unavailable — fetch failed"
+
+
+def test_pr_row_no_pr_falls_back_to_detached_head_placeholder():
+    """IN-02 regression: a falsy current_branch must not render empty
+    parens."""
+    status = _pr_status(kind=PrStatusKind.NO_PR, current_branch=None)
+
+    spec = menu_builder._pr_row(status, "base-branch-watch")
+
+    assert spec.title == "⚪ base-branch-watch: no open PR (detached HEAD)"
+
+
 def test_pr_row_open_pending_checks():
     status = _pr_status(
         kind=PrStatusKind.OPEN,

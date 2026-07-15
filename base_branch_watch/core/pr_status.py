@@ -23,7 +23,7 @@ from base_branch_watch.core.models import PrStatus, PrStatusKind
 
 GH = shutil.which("gh")
 
-_VIEW_FIELDS = "number,state,mergeable,mergeStateStatus,reviewDecision,baseRefName"
+_VIEW_FIELDS = "number,state,mergeStateStatus,reviewDecision,baseRefName"
 
 
 def _run_gh(repo_path: str, args: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
@@ -41,22 +41,26 @@ def _checks_counts(repo_path: str, timeout: int) -> tuple[int, int, int, int]:
 
     Only used to detect invocation-level failure; never trusts the exit code
     for pass/fail (RESEARCH Pitfall 2 — `gh pr checks --json ...` returns
-    exit 0 even with failing checks). On any failure to invoke/parse, all
-    four counts stay 0.
+    exit 0 even with failing checks). On any failure to invoke/parse, total
+    is -1 — a distinct "unavailable" sentinel from "genuinely zero checks
+    configured" (WR-04), so the caller can render "checks unavailable"
+    instead of misleadingly claiming "no checks configured".
     """
     try:
         result = _run_gh(repo_path, ["pr", "checks", "--json", "bucket"], timeout)
     except (subprocess.TimeoutExpired, OSError):
-        return (0, 0, 0, 0)
+        return (0, 0, 0, -1)
     try:
         buckets = json.loads(result.stdout)
     except json.JSONDecodeError:
-        return (0, 0, 0, 0)
+        return (0, 0, 0, -1)
     if not isinstance(buckets, list):
-        return (0, 0, 0, 0)
-    checks_pass = sum(1 for b in buckets if b.get("bucket") == "pass")
-    checks_fail = sum(1 for b in buckets if b.get("bucket") == "fail")
-    checks_pending = sum(1 for b in buckets if b.get("bucket") == "pending")
+        return (0, 0, 0, -1)
+    checks_pass = sum(1 for b in buckets if isinstance(b, dict) and b.get("bucket") == "pass")
+    checks_fail = sum(1 for b in buckets if isinstance(b, dict) and b.get("bucket") == "fail")
+    checks_pending = sum(
+        1 for b in buckets if isinstance(b, dict) and b.get("bucket") == "pending"
+    )
     return (checks_pass, checks_fail, checks_pending, len(buckets))
 
 
@@ -126,6 +130,17 @@ def check_pr(repo_path: str, timeout: int = 15) -> PrStatus:
         data = json.loads(result.stdout)
     except json.JSONDecodeError:
         return PrStatus.failed("gh pr view returned unparseable JSON")
+
+    # CR-01: `gh pr view` (no PR number given) keeps resolving to the PR
+    # associated with the current branch even after it merges/closes, as
+    # long as that branch still exists on GitHub — it does NOT fall through
+    # to "no pull requests found" (verified live). Detect this directly
+    # instead of relying solely on final_state()'s NO_PR-transition probe.
+    state = data.get("state")
+    if state == "MERGED":
+        return PrStatus(kind=PrStatusKind.MERGED, number=data.get("number"))
+    if state == "CLOSED":
+        return PrStatus(kind=PrStatusKind.CLOSED, number=data.get("number"))
 
     checks_pass, checks_fail, checks_pending, checks_total = _checks_counts(repo_path, timeout)
 

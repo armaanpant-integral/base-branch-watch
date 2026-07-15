@@ -231,6 +231,92 @@ def test_rate_limit_reset_text_returns_none_on_failure():
     assert result is None
 
 
+# -- CR-01 regression (code review, Phase 04): `gh pr view`'s primary call
+# keeps resolving to a MERGED/CLOSED PR directly (branch not deleted) --
+# check_pr must detect this itself, not rely solely on final_state(). --------
+
+
+def test_check_pr_open_call_returns_merged_kind_directly():
+    from base_branch_watch.core import pr_status
+
+    view_result = _completed(0, stdout='{"number":42,"state":"MERGED"}')
+
+    with patch(
+        "base_branch_watch.core.pr_status.GH", "/usr/local/bin/gh"
+    ), patch(
+        "base_branch_watch.core.pr_status.subprocess.run", return_value=view_result
+    ):
+        status = pr_status.check_pr("/tmp/repo")
+
+    assert status.kind == PrStatusKind.MERGED
+    assert status.number == 42
+
+
+def test_check_pr_open_call_returns_closed_kind_directly():
+    from base_branch_watch.core import pr_status
+
+    view_result = _completed(0, stdout='{"number":7,"state":"CLOSED"}')
+
+    with patch(
+        "base_branch_watch.core.pr_status.GH", "/usr/local/bin/gh"
+    ), patch(
+        "base_branch_watch.core.pr_status.subprocess.run", return_value=view_result
+    ):
+        status = pr_status.check_pr("/tmp/repo")
+
+    assert status.kind == PrStatusKind.CLOSED
+    assert status.number == 7
+
+
+# -- WR-02 regression: _checks_counts guards non-dict bucket elements --------
+
+
+def test_check_pr_open_with_non_dict_bucket_elements_does_not_raise():
+    from base_branch_watch.core import pr_status
+
+    view_result = _completed(0, stdout='{"number":1,"state":"OPEN"}')
+    # Malformed/unexpected `gh pr checks` output: a list of strings, not dicts.
+    checks_result = _completed(0, stdout='["pass", "fail"]')
+
+    with patch(
+        "base_branch_watch.core.pr_status.GH", "/usr/local/bin/gh"
+    ), patch(
+        "base_branch_watch.core.pr_status.subprocess.run",
+        side_effect=[view_result, checks_result],
+    ):
+        status = pr_status.check_pr("/tmp/repo")
+
+    assert status.kind == PrStatusKind.OPEN
+    assert status.checks_pass == 0
+    assert status.checks_fail == 0
+
+
+# -- WR-04 regression: checks-fetch failure is distinguishable from a
+# genuinely empty checks list. --------------------------------------------
+
+
+def test_check_pr_open_with_checks_fetch_timeout_sets_unavailable_sentinel():
+    from base_branch_watch.core import pr_status
+
+    view_result = _completed(0, stdout='{"number":1,"state":"OPEN"}')
+
+    def run_side_effect(*args, **kwargs):
+        cmd = args[0] if args else kwargs.get("args")
+        if "checks" in cmd:
+            raise subprocess.TimeoutExpired(cmd="gh", timeout=15)
+        return view_result
+
+    with patch(
+        "base_branch_watch.core.pr_status.GH", "/usr/local/bin/gh"
+    ), patch(
+        "base_branch_watch.core.pr_status.subprocess.run", side_effect=run_side_effect
+    ):
+        status = pr_status.check_pr("/tmp/repo")
+
+    assert status.kind == PrStatusKind.OPEN
+    assert status.checks_total == -1
+
+
 # -- Task 3 (Plan 02): final_state() — D-03 merged/closed one-cycle probe --
 
 
