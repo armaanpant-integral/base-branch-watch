@@ -181,3 +181,71 @@ class MenuItemSpec:
     callback_key: str | None = None
     detail: str | None = None
     children: list["MenuItemSpec"] = field(default_factory=list)
+
+
+class PrStatusKind(IntEnum):
+    """All possible PR-status kinds for the current checked-out branch.
+
+    Deliberately a SEPARATE enum from StatusKind (D-08) — PR status is purely
+    informational and must never fold into the git-status severity/worst-wins
+    system (_KIND_SEVERITY / _WORST_KIND_RANK are StatusKind-only, and must
+    stay that way). This phase (Plan 01) only ever produces OPEN, NO_PR, and
+    CHECK_FAILED; MERGED/CLOSED/NOT_INSTALLED/NOT_AUTHENTICATED/RATE_LIMITED
+    are declared now so Plan 02 only adds conditions that set them, not a
+    redesign of this enum.
+    """
+
+    NO_PR = 0
+    OPEN = 1
+    MERGED = 2
+    CLOSED = 3
+    NOT_INSTALLED = 4
+    NOT_AUTHENTICATED = 5
+    RATE_LIMITED = 6
+    CHECK_FAILED = 7
+
+
+@dataclass
+class PrStatus:
+    """PR status for a single repo's current checked-out branch.
+
+    Own dataclass, NOT folded into RepoStatus/BranchStatus (D-08) — rendered
+    as a second, independent menu row/submenu (app/menu_builder.py::_pr_row).
+    """
+
+    kind: PrStatusKind
+    number: int | None = None
+    """PR number — set when kind in (OPEN, MERGED, CLOSED)."""
+    checks_pass: int = 0
+    checks_fail: int = 0
+    checks_pending: int = 0
+    checks_total: int = 0
+    """Aggregate CI check counts from `gh pr checks --json bucket` — set when
+    kind == OPEN. checks_total is the full bucket array length (includes
+    skipping/cancel in the denominator)."""
+    review_decision: str | None = None
+    """Raw gh reviewDecision value (APPROVED/CHANGES_REQUESTED/
+    REVIEW_REQUIRED) or None — set when kind == OPEN."""
+    merge_state_status: str | None = None
+    """Raw gh mergeStateStatus value (CLEAN/DIRTY/BLOCKED/BEHIND/DRAFT/
+    UNSTABLE/HAS_HOOKS/UNKNOWN) — set when kind == OPEN."""
+    base_ref: str | None = None
+    """PR's baseRefName — set when kind == OPEN."""
+    current_branch: str | None = None
+    """Set when kind == NO_PR, for the "no open PR (<branch>)" row text."""
+    reason: str | None = None
+    """Set when kind in (CHECK_FAILED, RATE_LIMITED) — short, truncatable
+    failure description. Never raw multi-line gh stderr (Security Domain)."""
+    retry_at: str | None = None
+    """Set when kind == RATE_LIMITED — "HH:MM" rate-limit reset time.
+    Reserved for Plan 02; unused in Plan 01."""
+
+    @classmethod
+    def failed(cls, reason: str) -> "PrStatus":
+        """Build a CHECK_FAILED PrStatus for an unexpected exception/failure.
+
+        Mirrors RepoStatus.failed — used by runner.batch.check_all to isolate
+        a per-repo gh failure to a single failed PrStatus rather than killing
+        the batch (D-11).
+        """
+        return cls(kind=PrStatusKind.CHECK_FAILED, reason=reason)
