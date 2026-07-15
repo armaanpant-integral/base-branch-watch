@@ -134,3 +134,17 @@ def test_check_pr_timeout_returns_check_failed():
         status = pr_status.check_pr("/tmp/repo")
 
     assert status.kind == PrStatusKind.CHECK_FAILED
+
+
+def test_pr_status_module_is_pure_no_rumps_or_appkit_import():
+    """ARCH-01 — mirrors tests/runner/test_batch.py's equivalent guard. Checks
+    actual import statements, not docstring mentions (the module docstring
+    legitimately documents "no rumps/AppKit import, ever", mirroring
+    core/git_ops.py's own docstring convention)."""
+    import base_branch_watch.core.pr_status as pr_status_module
+
+    src = open(pr_status_module.__file__).read()
+    assert "import rumps" not in src
+    assert "from rumps" not in src
+    assert "import AppKit" not in src
+    assert "from AppKit" not in src
