@@ -231,6 +231,79 @@ def test_rate_limit_reset_text_returns_none_on_failure():
     assert result is None
 
 
+# -- Task 3 (Plan 02): final_state() — D-03 merged/closed one-cycle probe --
+
+
+def test_final_state_maps_merged():
+    from base_branch_watch.core import pr_status
+
+    view_result = _completed(0, stdout='{"state":"MERGED"}')
+    with patch(
+        "base_branch_watch.core.pr_status.GH", "/usr/local/bin/gh"
+    ), patch(
+        "base_branch_watch.core.pr_status.subprocess.run", return_value=view_result
+    ):
+        kind = pr_status.final_state("/tmp/repo", 42)
+
+    assert kind == PrStatusKind.MERGED
+
+
+def test_final_state_maps_closed():
+    from base_branch_watch.core import pr_status
+
+    view_result = _completed(0, stdout='{"state":"CLOSED"}')
+    with patch(
+        "base_branch_watch.core.pr_status.GH", "/usr/local/bin/gh"
+    ), patch(
+        "base_branch_watch.core.pr_status.subprocess.run", return_value=view_result
+    ):
+        kind = pr_status.final_state("/tmp/repo", 42)
+
+    assert kind == PrStatusKind.CLOSED
+
+
+def test_final_state_maps_other_state_to_no_pr():
+    from base_branch_watch.core import pr_status
+
+    view_result = _completed(0, stdout='{"state":"OPEN"}')
+    with patch(
+        "base_branch_watch.core.pr_status.GH", "/usr/local/bin/gh"
+    ), patch(
+        "base_branch_watch.core.pr_status.subprocess.run", return_value=view_result
+    ):
+        kind = pr_status.final_state("/tmp/repo", 42)
+
+    assert kind == PrStatusKind.NO_PR
+
+
+def test_final_state_never_raises_on_failure_maps_to_no_pr():
+    from base_branch_watch.core import pr_status
+
+    with patch(
+        "base_branch_watch.core.pr_status.GH", "/usr/local/bin/gh"
+    ), patch(
+        "base_branch_watch.core.pr_status.subprocess.run",
+        side_effect=subprocess.TimeoutExpired(cmd="gh", timeout=15),
+    ):
+        kind = pr_status.final_state("/tmp/repo", 42)
+
+    assert kind == PrStatusKind.NO_PR
+
+
+def test_final_state_nonzero_exit_maps_to_no_pr():
+    from base_branch_watch.core import pr_status
+
+    view_result = _completed(1, stderr="no pull request found")
+    with patch(
+        "base_branch_watch.core.pr_status.GH", "/usr/local/bin/gh"
+    ), patch(
+        "base_branch_watch.core.pr_status.subprocess.run", return_value=view_result
+    ):
+        kind = pr_status.final_state("/tmp/repo", 42)
+
+    assert kind == PrStatusKind.NO_PR
+
+
 def test_pr_status_module_is_pure_no_rumps_or_appkit_import():
     """ARCH-01 — mirrors tests/runner/test_batch.py's equivalent guard. Checks
     actual import statements, not docstring mentions (the module docstring
