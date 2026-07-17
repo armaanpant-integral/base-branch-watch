@@ -28,8 +28,6 @@ Think of it as a small robot that, every few minutes, quietly runs `git fetch` o
 
 None of this touches your working directory or commits anything on your behalf. It only *reads* - `git fetch`, `git log`, `git diff`, `git merge-tree` (a **dry-run** merge that computes whether two branches would conflict, without actually merging or touching a single file). The only place it ever *gates* an action is at `git push` time, via a small hook it installs for you, and even there it just prompts - you always have the final word.
 
-Curious about the actual git mechanics (objects, refs, why a "dry-run merge" is even possible, what a git hook is)? See the [Notion doc](https://app.notion.com/p/39802b213586816da9a1cf96cfb6e896) for a from-scratch explainer plus flow diagrams - no git background assumed.
-
 ## Why not just use my IDE's built-in "ahead/behind" indicator?
 
 IntelliJ, VS Code, and friends all show a small ahead/behind count for your current branch - so why build this instead of just glancing at that?
@@ -101,7 +99,7 @@ pytest tests/ -q     # 182 tests
 ruff check .
 ```
 
-Built test-first (TDD) with a UI-free `core/` library - see [CLAUDE.md](CLAUDE.md) for the full architecture/stack rationale, and the Notion doc for a guided walkthrough of *why* it's shaped this way.
+Built test-first (TDD) with a UI-free `core/` library - see [CLAUDE.md](CLAUDE.md) for the full architecture/stack rationale.
 
 ## Status
 
