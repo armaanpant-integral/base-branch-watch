@@ -15,6 +15,9 @@ from pathlib import Path
 from base_branch_watch.core.models import RepoConfig
 
 DEFAULT_POLL_INTERVAL_SECONDS = 300
+# Floor exists so a mistyped or too-low interval entered via the "Set
+# Interval..." menu prompt can't hammer git fetch or the gh API with an
+# overly tight polling loop.
 MIN_POLL_INTERVAL_SECONDS = 30
 CONFIG_FILENAME = "config.json"
 

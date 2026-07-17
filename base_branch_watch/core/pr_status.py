@@ -23,6 +23,9 @@ from base_branch_watch.core.models import PrStatus, PrStatusKind
 
 GH = shutil.which("gh")
 
+# Exact field list passed to `gh pr view --json`. check_pr() below reads each of
+# these via data.get(...) -- adding a new field to PrStatus in models.py also
+# requires adding it here, or gh will never return it.
 _VIEW_FIELDS = "number,state,mergeStateStatus,reviewDecision,baseRefName"
 
 
