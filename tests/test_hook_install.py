@@ -173,6 +173,9 @@ class _FakePanel:
     def setPrompt_(self, _value) -> None:
         pass
 
+    def setCollectionBehavior_(self, _value) -> None:
+        pass
+
     def runModal(self) -> int:
         return 1
 
@@ -217,8 +220,22 @@ def test_add_repo_triggers_hook_install(app, monkeypatch, fixture_repos):
         clicked = True
         text = "main"
 
-    fake_window = type("W", (), {"run": lambda self: FakeResp()})
-    monkeypatch.setattr(rumps, "Window", lambda **kwargs: fake_window())
+    class FakeAlertWindow:
+        def setCollectionBehavior_(self, _value) -> None:
+            pass
+
+    class FakeAlert:
+        def window(self) -> FakeAlertWindow:
+            return FakeAlertWindow()
+
+    class FakeWindow:
+        def __init__(self) -> None:
+            self._alert = FakeAlert()
+
+        def run(self) -> FakeResp:
+            return FakeResp()
+
+    monkeypatch.setattr(rumps, "Window", lambda **kwargs: FakeWindow())
 
     captured: list[str] = []
     monkeypatch.setattr(app, "_install_hook_for", lambda repo_path: captured.append(repo_path))

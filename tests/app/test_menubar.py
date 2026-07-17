@@ -10,10 +10,9 @@ wiring spec.children into a real submenu, and _repo_click_handler showing
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
-import rumps
 
 from base_branch_watch.app import menubar
 from base_branch_watch.core.models import (
@@ -295,8 +294,11 @@ def test_edit_base_branches_replaces_existing_bases_without_duplicate_entry(app,
         clicked = True
         text = "main, release"
 
-    fake_window = type("W", (), {"run": lambda self: FakeResp()})
-    monkeypatch.setattr(rumps, "Window", lambda **kwargs: fake_window())
+    monkeypatch.setattr(
+        menubar.BaseBranchWatchApp,
+        "_show_text_prompt",
+        staticmethod(lambda title, message, default_text, ok, cancel: FakeResp()),
+    )
 
     app._edit_base_branches_click_handler("/tmp/myrepo")(None)
 
@@ -311,12 +313,61 @@ def test_edit_base_branches_cancel_leaves_config_untouched(app, monkeypatch):
         clicked = False
         text = ""
 
-    fake_window = type("W", (), {"run": lambda self: FakeResp()})
-    monkeypatch.setattr(rumps, "Window", lambda **kwargs: fake_window())
+    monkeypatch.setattr(
+        menubar.BaseBranchWatchApp,
+        "_show_text_prompt",
+        staticmethod(lambda title, message, default_text, ok, cancel: FakeResp()),
+    )
 
     app._edit_base_branches_click_handler("/tmp/myrepo")(None)
 
     assert app.cfg.repos[0].base_branches == ["main"]
+
+
+def test_show_text_prompt_sets_can_join_all_spaces(monkeypatch):
+    """_show_text_prompt must force the rumps.Window's backing NSAlert window
+    to join the user's CURRENT macOS Space before running (mirrors
+    _show_alert's fix), while still delegating the run to rumps.Window."""
+
+    class FakeResponse:
+        clicked = True
+        text = "main"
+
+    fake_window = MagicMock()
+    fake_window.run.return_value = FakeResponse()
+    monkeypatch.setattr(menubar.rumps, "Window", lambda **kwargs: fake_window)
+
+    resp = menubar.BaseBranchWatchApp._show_text_prompt(
+        title="t", message="m", default_text="d", ok="OK", cancel="Cancel"
+    )
+
+    fake_window._alert.window().setCollectionBehavior_.assert_called_once_with(
+        menubar.NSWindowCollectionBehaviorCanJoinAllSpaces
+    )
+    fake_window.run.assert_called_once()
+    assert resp is fake_window.run.return_value
+
+
+def test_add_repo_open_panel_sets_can_join_all_spaces(app, monkeypatch):
+    """_add_repo's NSOpenPanel folder picker must set collectionBehavior
+    before runModal() so it opens on the user's CURRENT macOS Space.
+
+    Patches the module-level `NSOpenPanel` name (not an attribute on the
+    real PyObjC class) -- PyObjC classes don't support monkeypatch's
+    setattr/delattr round-trip on their selectors, and replacing the real
+    class's `openPanel` classmethod would invoke the actual native picker."""
+    panel = MagicMock()
+    panel.runModal.return_value = 0  # non-1 -> cancel branch, no further work
+    fake_open_panel_cls = MagicMock()
+    fake_open_panel_cls.openPanel.return_value = panel
+    monkeypatch.setattr(menubar, "NSOpenPanel", fake_open_panel_cls)
+    monkeypatch.setattr(app, "_activate", lambda: None)
+
+    app._add_repo(None)
+
+    panel.setCollectionBehavior_.assert_called_once_with(
+        menubar.NSWindowCollectionBehaviorCanJoinAllSpaces
+    )
 
 
 def test_child_click_handler_reports_specific_base_status(app, monkeypatch):
