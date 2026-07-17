@@ -50,6 +50,13 @@ def _checks_counts(repo_path: str, timeout: int) -> tuple[int, int, int, int]:
         result = _run_gh(repo_path, ["pr", "checks", "--json", "bucket"], timeout)
     except (subprocess.TimeoutExpired, OSError):
         return (0, 0, 0, -1)
+    if result.returncode != 0:
+        # `gh pr checks` exits nonzero with empty stdout when a PR genuinely
+        # has zero checks configured - not a fetch failure, so don't collapse
+        # it into the -1 "unavailable" sentinel.
+        if "no checks reported" in result.stderr.lower():
+            return (0, 0, 0, 0)
+        return (0, 0, 0, -1)
     try:
         buckets = json.loads(result.stdout)
     except json.JSONDecodeError:
