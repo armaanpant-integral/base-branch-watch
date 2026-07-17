@@ -87,9 +87,21 @@ Click the menu bar icon to see watched repos and their status.
 - **Remove Repo**
 - **Set Interval…** - change the polling interval (default 300s; PR-status checks are separately floored to no faster than every ~2 minutes, since CI/review state doesn't change second-to-second)
 - **Refresh Now**
-- **Open Log** - today's run log, rotated daily
+- **Open Log** - opens the app's own event log (see below) in TextEdit
+
+There are two separate log files, and they're not the same thing:
+
+- **App event log** - `~/Library/Application Support/base-branch-watch/base-branch-watch.log`. Truncated and rotated at each day boundary (not appended-forever), tracked via a sibling `.base-branch-watch.logday` marker file. One line per check-cycle event: cycle-start timestamps, per-repo `[OK]`/`[FAIL]` status lines (repo basename, behind/ahead counts, base branch name), and pre-push hook install/uninstall results. No secrets, tokens, or full filesystem paths are logged - only the repo's basename. This is what "Open Log" opens.
+- **launchd stdout/stderr redirects** - `~/Library/Application Support/base-branch-watch/launchd.stdout.log` and `launchd.stderr.log`. Raw stdout/stderr from the Python process itself, set via `StandardOutPath`/`StandardErrorPath` in the LaunchAgent plist. Not surfaced in the menu - check these manually if the app crashes or fails to start, not for day-to-day status.
 
 **When you `git push`:** you'll always see a short summary of what's new on the base branch. If - and only if - a real conflict would result, you're asked "Push anyway? [y/N]"; anything else aborts the push so you can pull/rebase first. Set `BBWATCH_SKIP_GATE=1` to bypass the check entirely for one push.
+
+## Known Issues
+
+Both of these are root-caused; neither fix is confirmed fully resolved yet.
+
+- **PR status can say "gh not installed" even when it is.** The LaunchAgent inherits launchd's bare default PATH (`/usr/bin:/bin:/usr/sbin:/sbin`), which doesn't include Homebrew's `/opt/homebrew/bin` (Apple Silicon) or `/usr/local/bin` (Intel) where `gh` typically lives. `core/pr_status.py` resolves `gh`'s location once via `shutil.which("gh")` at import time with no fallback path. A fix is in progress: baking the installer's PATH into the LaunchAgent plist. Terminal-run `bbwatch` commands are unaffected - only the menu-bar app's background PR-status checks are.
+- **Dialogs can open on the wrong macOS Space.** The Add Repo folder picker, Add Repo base-branch prompt, Edit Base Branch(es) prompt, and Set Interval prompt can appear on a different Space than the one you're currently on, instead of following you there. Root cause: this is a menu-bar-only (`LSUIElement`) background app with no persistent window to anchor a Space, so a freshly-shown dialog can default to whichever Space the Desktop/Finder considers "home." A fix is in progress; the correct AppKit technique is still being verified.
 
 ## Development
 
