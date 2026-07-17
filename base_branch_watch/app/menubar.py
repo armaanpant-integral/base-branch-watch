@@ -458,6 +458,26 @@ class BaseBranchWatchApp(rumps.App):
         response = alert.runModal()
         return 1 if response == 1000 else 0
 
+    @staticmethod
+    def _show_text_prompt(title: str, message: str, default_text: str, ok: str, cancel: str):
+        """rumps.Window wrapper that forces the backing window to join the
+        user's CURRENT macOS Space, mirroring _show_alert's fix. rumps.Window
+        builds an NSAlert (self._alert) at construction time and its own
+        run() reads self._alert.window() before calling runModal() (to set
+        dark-mode appearance) -- proof the backing window is available and
+        mutable pre-run, the same seam _show_alert uses directly. Delegates
+        all UX (accessory text field, buttons) and the returned
+        Response(.clicked, .text) shape to rumps.Window unchanged."""
+        window = rumps.Window(
+            title=title,
+            message=message,
+            default_text=default_text,
+            ok=ok,
+            cancel=cancel,
+        )
+        window._alert.window().setCollectionBehavior_(NSWindowCollectionBehaviorCanJoinAllSpaces)
+        return window.run()
+
     def _add_repo(self, _sender) -> None:
         self._activate()
         panel = NSOpenPanel.openPanel()
@@ -465,6 +485,7 @@ class BaseBranchWatchApp(rumps.App):
         panel.setCanChooseFiles_(False)
         panel.setAllowsMultipleSelection_(False)
         panel.setPrompt_("Select Repo")
+        panel.setCollectionBehavior_(NSWindowCollectionBehaviorCanJoinAllSpaces)
         result = panel.runModal()
         if result != 1:
             return
@@ -480,15 +501,15 @@ class BaseBranchWatchApp(rumps.App):
         repo_name = os.path.basename(repo_path.rstrip("/"))
         detected = git_ops.detect_default_branch(repo_path)
 
-        resp = rumps.Window(
+        resp = self._show_text_prompt(
             title="Add Repo",
             message=(
-                f"Base branch(es) to watch for {repo_name} — comma-separated for multiple:"
+                f"Base branch(es) to watch for {repo_name} - comma-separated for multiple:"
             ),
             default_text=detected or "main",
             ok="Add",
             cancel="Cancel",
-        ).run()
+        )
         if not resp.clicked:
             return
         raw_text = resp.text.strip()
@@ -539,13 +560,13 @@ class BaseBranchWatchApp(rumps.App):
             current = next((r for r in self.cfg.repos if r.repo_path == repo_path), None)
             if current is None:
                 return
-            resp = rumps.Window(
+            resp = self._show_text_prompt(
                 title="Edit Base Branch(es)",
-                message=f"Base branch(es) to watch for {name} — comma-separated for multiple:",
+                message=f"Base branch(es) to watch for {name} - comma-separated for multiple:",
                 default_text=", ".join(current.base_branches),
                 ok="Save",
                 cancel="Cancel",
-            ).run()
+            )
             if not resp.clicked:
                 return
             parsed = config.parse_base_branches(resp.text.strip())
@@ -562,13 +583,13 @@ class BaseBranchWatchApp(rumps.App):
 
     def _set_interval(self, _sender) -> None:
         self._activate()
-        resp = rumps.Window(
+        resp = self._show_text_prompt(
             title="Set Interval",
             message="Polling interval in seconds (minimum 30):",
             default_text=str(self.cfg.poll_interval_seconds),
             ok="Save",
             cancel="Cancel",
-        ).run()
+        )
         if not resp.clicked:
             return
         raw_text = resp.text.strip()
