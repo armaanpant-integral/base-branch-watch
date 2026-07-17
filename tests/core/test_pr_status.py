@@ -317,6 +317,29 @@ def test_check_pr_open_with_checks_fetch_timeout_sets_unavailable_sentinel():
     assert status.checks_total == -1
 
 
+def test_check_pr_open_with_zero_checks_configured_reports_zero_not_unavailable():
+    from base_branch_watch.core import pr_status
+
+    view_result = _completed(0, stdout='{"number":1,"state":"OPEN"}')
+    checks_result = _completed(
+        1, stdout="", stderr="no checks reported on the 'main' branch\n"
+    )
+
+    with patch(
+        "base_branch_watch.core.pr_status.GH", "/usr/local/bin/gh"
+    ), patch(
+        "base_branch_watch.core.pr_status.subprocess.run",
+        side_effect=[view_result, checks_result],
+    ):
+        status = pr_status.check_pr("/tmp/repo")
+
+    assert status.kind == PrStatusKind.OPEN
+    assert status.checks_total == 0
+    assert status.checks_pass == 0
+    assert status.checks_fail == 0
+    assert status.checks_pending == 0
+
+
 # -- Task 3 (Plan 02): final_state() — D-03 merged/closed one-cycle probe --
 
 
