@@ -121,3 +121,5 @@ Built test-first (TDD) with a UI-free `core/` library - see [CLAUDE.md](CLAUDE.m
 
 Personal project, no license file yet - ask before reusing outside personal/internal use.
 </content>
+
+<!-- e2e flow test marker: base-branch-watch dogfood test, safe to remove -->
