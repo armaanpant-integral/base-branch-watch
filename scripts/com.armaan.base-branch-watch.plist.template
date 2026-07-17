@@ -10,6 +10,11 @@
         <string>-m</string>
         <string>base_branch_watch</string>
     </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>__PATH__</string>
+    </dict>
     <key>WorkingDirectory</key>
     <string>__WORKDIR__</string>
     <key>RunAtLoad</key>

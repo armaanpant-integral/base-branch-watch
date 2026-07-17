@@ -75,6 +75,21 @@ install() {
     echo "(confirmed it can import base_branch_watch — this is the exact interpreter"
     echo " launchd will spawn directly, unattended, at every login)"
 
+    # launchd runs this agent under its own bare default PATH
+    # (/usr/bin:/bin:/usr/sbin:/sbin), which excludes /opt/homebrew/bin and
+    # similar. That starves any PATH-dependent subprocess dependency (e.g.
+    # `gh`, resolved via shutil.which at import in pr_status.py) of a real
+    # PATH, producing false "not installed" results. Bake the installing
+    # shell's PATH into the plist so launchd's spawned process sees the same
+    # PATH the installer had. Escape sed metacharacters (&, #, \) exactly as
+    # install-pre-push-hook.sh escapes python_bin (WR-03) - the "#" matters
+    # because "#" is this script's sed substitution delimiter. XML-unsafe
+    # characters (<, >, &) inside a PATH component are intentionally left
+    # unescaped: they are pathological on a dev machine and out of scope for
+    # this installer.
+    echo "Baking in PATH: $PATH"
+    path_escaped=$(printf '%s\n' "$PATH" | sed 's/[&#\\]/\\&/g')
+
     mkdir -p "$HOME/Library/LaunchAgents"
     mkdir -p "$LOG_DIR"
 
@@ -82,6 +97,7 @@ install() {
         -e "s#__PYTHON__#$python_bin#g" \
         -e "s#__WORKDIR__#$REPO_ROOT#g" \
         -e "s#__LOGDIR__#$LOG_DIR#g" \
+        -e "s#__PATH__#$path_escaped#g" \
         "$TEMPLATE" > "$PLIST_DEST"
     echo "Wrote $PLIST_DEST"
 
