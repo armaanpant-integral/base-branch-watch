@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-from base_branch_watch.core import git_ops
+import subprocess
+from unittest.mock import patch
+
+import pytest
+
+from base_branch_watch.core import git_ops, log
 from base_branch_watch.core.models import RepoConfig, Severity, StatusKind
 
 
@@ -134,7 +139,7 @@ def test_fetch_rejects_dash_prefixed_base_as_flag(fixture_repos):
 
 
 def test_check_repo_fetch_failure_is_distinct_not_bogus_behind(
-    fixture_repos_fetch_fails, default_branch_name
+    fixture_repos_fetch_fails, default_branch_name, bbw_config_dir
 ):
     _origin, clone_path = fixture_repos_fetch_fails
 
@@ -145,9 +150,179 @@ def test_check_repo_fetch_failure_is_distinct_not_bogus_behind(
     branch_status = status.branch_statuses[0]
     assert branch_status.kind == StatusKind.CHECK_FAILED
     assert branch_status.behind == 0
-    assert branch_status.reason == "fetch failed — check network/SSH access"
+    # Real git stderr for a remote path that is gone, not a canned "SSH" guess.
+    assert branch_status.reason is not None
+    assert branch_status.reason.startswith("fetch failed (origin is not a git repository)")
+    assert "ssh" not in branch_status.reason.lower()
     assert status.worst_kind == StatusKind.CHECK_FAILED
     assert status.severity == Severity.BLOCKING
+    logged_text = log.log_path().read_text()
+    assert "does not appear to be a git repository" in logged_text
+    assert f"base {default_branch_name}" in logged_text
+
+
+REAL_GIT_FETCH_ERRORS = [
+    (
+        "ssh: Could not resolve hostname github.com: nodename nor servname provided, or not known\n"
+        "fatal: Could not read from remote repository.\n",
+        "network unreachable",
+    ),
+    (
+        "fatal: unable to access 'https://github.com/o/r.git/': "
+        "Could not resolve host: github.com\n",
+        "network unreachable",
+    ),
+    (
+        "ssh: connect to host github.com port 22: Operation timed out\n"
+        "fatal: Could not read from remote repository.\n",
+        "network unreachable",
+    ),
+    (
+        "git@github.com: Permission denied (publickey).\n"
+        "fatal: Could not read from remote repository.\n",
+        "auth or access denied",
+    ),
+    (
+        "remote: Repository not found.\n"
+        "fatal: repository 'https://github.com/o/r.git/' not found\n",
+        "auth or access denied",
+    ),
+    (
+        "fatal: could not read Username for 'https://github.com': terminal prompts disabled\n",
+        "auth or access denied",
+    ),
+    ("fatal: couldn't find remote ref main\n", "base branch not found on origin"),
+    (
+        "error: cannot lock ref 'refs/remotes/origin/main': is at abc but expected def\n",
+        "ref locked",
+    ),
+    (
+        "fatal: Unable to create '/r/.git/refs/remotes/origin/main.lock': File exists.\n",
+        "ref locked",
+    ),
+    (
+        "fatal: '/gone/remote' does not appear to be a git repository\n"
+        "fatal: Could not read from remote repository.\n",
+        "origin is not a git repository",
+    ),
+    ("fetch timed out after 15s", "timeout"),
+    # Generic git trailer alone must not be guessed into a specific cause.
+    ("fatal: Could not read from remote repository.\n", "other"),
+    ("", "other"),
+    (None, "other"),
+]
+
+
+@pytest.mark.parametrize("fetch_error_text, expected_cause_label", REAL_GIT_FETCH_ERRORS)
+def test_classify_fetch_error_maps_real_git_stderr(fetch_error_text, expected_cause_label):
+    assert git_ops.classify_fetch_error(fetch_error_text) == expected_cause_label
+
+
+def test_fetch_failure_reason_uses_first_stderr_line_and_never_says_ssh_for_https():
+    https_error_text = (
+        "fatal: unable to access 'https://github.com/o/r.git/': "
+        "Could not resolve host: github.com\n"
+        "fatal: second line that must not appear\n"
+    )
+
+    reason = git_ops.fetch_failure_reason(https_error_text)
+
+    assert reason == (
+        "fetch failed (network unreachable): fatal: unable to access "
+        "'https://github.com/o/r.git/': Could not resolve host: github.com"
+    )
+    assert "ssh" not in reason.lower()
+    assert "second line" not in reason
+
+
+def test_fetch_failure_reason_caps_excerpt_length():
+    long_error_text = "fatal: " + "x" * 500
+
+    reason = git_ops.fetch_failure_reason(long_error_text)
+
+    assert len(reason) <= len("fetch failed (other): ") + git_ops.FETCH_ERROR_EXCERPT_CAP
+
+
+def test_fetch_failure_reason_without_error_text_has_label_only():
+    assert git_ops.fetch_failure_reason("") == "fetch failed (other)"
+
+
+def test_fetch_returns_git_stderr_from_mocked_run_git_on_nonzero_exit():
+    denied = subprocess.CompletedProcess(
+        args=["git"],
+        returncode=128,
+        stdout="",
+        stderr=(
+            "git@github.com: Permission denied (publickey).\n"
+            "fatal: Could not read from remote repository.\n"
+        ),
+    )
+
+    with patch("base_branch_watch.core.git_ops._run_git", return_value=denied):
+        result = git_ops.fetch("/any/repo", "main")
+
+    assert result.ok is False
+    assert git_ops.classify_fetch_error(result.error) == "auth or access denied"
+
+
+def test_fetch_timeout_from_mocked_run_git_is_classified_as_timeout():
+    with patch(
+        "base_branch_watch.core.git_ops._run_git",
+        side_effect=subprocess.TimeoutExpired(cmd="git", timeout=15),
+    ):
+        result = git_ops.fetch("/any/repo", "main")
+
+    assert result.ok is False
+    assert git_ops.classify_fetch_error(result.error) == "timeout"
+
+
+def test_check_repo_logs_raw_fetch_error_with_repo_base_and_cause(
+    fixture_repos, default_branch_name, bbw_config_dir
+):
+    _origin, clone_path = fixture_repos
+    raw_error_text = (
+        "git@github.com: Permission denied (publickey).\n"
+        "fatal: Could not read from remote repository.\n"
+    )
+
+    with patch(
+        "base_branch_watch.core.git_ops.fetch_with_retry",
+        return_value=git_ops.FetchResult(ok=False, error=raw_error_text),
+    ):
+        status = git_ops.check_repo(
+            RepoConfig(repo_path=clone_path, base_branches=[default_branch_name])
+        )
+
+    branch_status = status.branch_statuses[0]
+    assert branch_status.kind == StatusKind.CHECK_FAILED
+    assert branch_status.reason == (
+        "fetch failed (auth or access denied): git@github.com: Permission denied (publickey)."
+    )
+    logged_lines = log.log_path().read_text().splitlines()
+    assert logged_lines == [
+        f"[FAIL] fetch failed for {clone_path} (base {default_branch_name}, "
+        "cause auth or access denied): "
+        "git@github.com: Permission denied (publickey). | "
+        "fatal: Could not read from remote repository."
+    ]
+
+
+def test_check_repo_fetch_failure_survives_log_write_error(fixture_repos, default_branch_name):
+    _origin, clone_path = fixture_repos
+
+    with (
+        patch(
+            "base_branch_watch.core.git_ops.fetch_with_retry",
+            return_value=git_ops.FetchResult(ok=False, error="fetch timed out after 15s"),
+        ),
+        patch("base_branch_watch.core.git_ops.log.append", side_effect=OSError("disk full")),
+    ):
+        status = git_ops.check_repo(
+            RepoConfig(repo_path=clone_path, base_branches=[default_branch_name])
+        )
+
+    assert status.branch_statuses[0].kind == StatusKind.CHECK_FAILED
+    assert status.branch_statuses[0].reason == "fetch failed (timeout): fetch timed out after 15s"
 
 
 def test_check_repo_conflict_risk_when_local_and_incoming_overlap(
