@@ -206,6 +206,46 @@ REAL_GIT_FETCH_ERRORS = [
         "origin is not a git repository",
     ),
     ("fetch timed out after 15s", "timeout"),
+    (
+        "fatal: unable to access 'https://github.com/o/r.git/': "
+        "Failed to connect to github.com port 443 after 75003 ms: Couldn't connect to server\n",
+        "network unreachable",
+    ),
+    (
+        "fatal: unable to access 'https://github.com/o/r.git/': "
+        "Couldn't connect to server\n",
+        "network unreachable",
+    ),
+    (
+        "fatal: unable to access 'https://github.com/o/r.git/': "
+        "LibreSSL SSL_connect: SSL_ERROR_SYSCALL in connection to github.com:443 \n",
+        "network unreachable",
+    ),
+    (
+        "fatal: unable to access 'https://git.corp.example/o/r.git/': "
+        "SSL certificate problem: unable to get local issuer certificate\n",
+        "tls certificate problem",
+    ),
+    (
+        "fatal: unable to access 'https://github.com/o/r.git/': "
+        "The requested URL returned error: 401\n",
+        "auth or access denied",
+    ),
+    (
+        "fatal: unable to access 'https://github.com/o/r.git/': "
+        "The requested URL returned error: 403\n",
+        "auth or access denied",
+    ),
+    (
+        "fatal: unable to access 'https://github.com/o/r.git/': "
+        "The requested URL returned error: 503\n",
+        "remote server error",
+    ),
+    (
+        "fatal: unable to access 'https://github.com/o/r.git/': "
+        "The requested URL returned error: 502\n",
+        "remote server error",
+    ),
     # Generic git trailer alone must not be guessed into a specific cause.
     ("fatal: Could not read from remote repository.\n", "other"),
     ("", "other"),
@@ -229,7 +269,7 @@ def test_fetch_failure_reason_uses_first_stderr_line_and_never_says_ssh_for_http
 
     assert reason == (
         "fetch failed (network unreachable): fatal: unable to access "
-        "'https://github.com/o/r.git/': Could not resolve host: github.com"
+        "'https://github.com/o/r.git/': Could"
     )
     assert "ssh" not in reason.lower()
     assert "second line" not in reason
@@ -240,7 +280,8 @@ def test_fetch_failure_reason_caps_excerpt_length():
 
     reason = git_ops.fetch_failure_reason(long_error_text)
 
-    assert len(reason) <= len("fetch failed (other): ") + git_ops.FETCH_ERROR_EXCERPT_CAP
+    assert git_ops.FETCH_ERROR_EXCERPT_CAP == 60
+    assert reason == "fetch failed (other): " + "fatal: " + "x" * 53
 
 
 def test_fetch_failure_reason_without_error_text_has_label_only():
@@ -304,6 +345,35 @@ def test_check_repo_logs_raw_fetch_error_with_repo_base_and_cause(
         "cause auth or access denied): "
         "git@github.com: Permission denied (publickey). | "
         "fatal: Could not read from remote repository."
+    ]
+
+
+def test_check_repo_keeps_reason_short_but_logs_full_stderr_line(
+    fixture_repos, default_branch_name, bbw_config_dir
+):
+    _origin, clone_path = fixture_repos
+    long_first_line = (
+        "fatal: unable to access 'https://github.com/o/r.git/': "
+        "The requested URL returned error: 403"
+    )
+
+    with patch(
+        "base_branch_watch.core.git_ops.fetch_with_retry",
+        return_value=git_ops.FetchResult(ok=False, error=long_first_line + "\n"),
+    ):
+        status = git_ops.check_repo(
+            RepoConfig(repo_path=clone_path, base_branches=[default_branch_name])
+        )
+
+    reason = status.branch_statuses[0].reason
+    assert reason == (
+        "fetch failed (auth or access denied): fatal: unable to access "
+        "'https://github.com/o/r.git/': The r"
+    )
+    assert "ssh" not in reason.lower()
+    assert log.log_path().read_text().splitlines() == [
+        f"[FAIL] fetch failed for {clone_path} (base {default_branch_name}, "
+        f"cause auth or access denied): {long_first_line}"
     ]
 
 

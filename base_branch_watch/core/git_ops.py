@@ -23,7 +23,7 @@ from base_branch_watch.core.models import (
 
 GIT = shutil.which("git") or "/usr/bin/git"
 
-FETCH_ERROR_EXCERPT_CAP = 100
+FETCH_ERROR_EXCERPT_CAP = 60
 FETCH_ERROR_LOG_CAP = 1000
 
 # Ordered: first matching rule wins, so specific causes sit above generic ones
@@ -41,11 +41,18 @@ _FETCH_ERROR_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
             "host key verification failed",
             "could not read username",
             "terminal prompts disabled",
+            "returned error: 401",
+            "returned error: 403",
         ),
     ),
+    ("tls certificate problem", ("ssl certificate problem",)),
+    ("remote server error", ("returned error: 5",)),
     (
         "network unreachable",
         (
+            "failed to connect to",
+            "couldn't connect to server",
+            "ssl_error_syscall",
             "could not resolve host",
             "network is unreachable",
             "no route to host",
