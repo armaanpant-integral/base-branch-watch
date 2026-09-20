@@ -8,10 +8,12 @@ What NOT to Use.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass
 
+from base_branch_watch.core import log
 from base_branch_watch.core.models import (
     BranchStatus,
     IncomingCommit,
@@ -21,6 +23,62 @@ from base_branch_watch.core.models import (
 )
 
 GIT = shutil.which("git") or "/usr/bin/git"
+
+_ERROR_LINE_NOISE_PREFIX = re.compile(
+    r"^(?:(?:fatal|error): )?(?:unable to access '[^']*': )?", re.IGNORECASE
+)
+
+FETCH_ERROR_EXCERPT_CAP = 60
+FETCH_ERROR_LOG_CAP = 1000
+
+# Ordered: first matching rule wins, so specific causes sit above generic ones
+# (git's trailing "Could not read from remote repository" fits several causes
+# and is deliberately NOT a rule of its own).
+_FETCH_ERROR_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("timeout", ("fetch timed out",)),
+    ("base branch not found on origin", ("couldn't find remote ref",)),
+    (
+        "auth or access denied",
+        (
+            "permission denied",
+            "authentication failed",
+            "repository not found",
+            "host key verification failed",
+            "could not read username",
+            "terminal prompts disabled",
+            "returned error: 401",
+            "returned error: 403",
+        ),
+    ),
+    ("tls certificate problem", ("ssl certificate problem",)),
+    ("remote server error", ("returned error: 5",)),
+    (
+        "network unreachable",
+        (
+            "failed to connect to",
+            "couldn't connect to server",
+            "ssl_error_syscall",
+            "could not resolve host",
+            "network is unreachable",
+            "no route to host",
+            "connection refused",
+            "connection timed out",
+            "operation timed out",
+            "connection reset",
+            "connection closed",
+            "temporary failure in name resolution",
+        ),
+    ),
+    (
+        "ref locked",
+        (
+            "cannot lock ref",
+            "another git process seems to be running",
+            ".lock': file exists",
+        ),
+    ),
+    ("origin is not a git repository", ("does not appear to be a git repository",)),
+)
 
 ZERO_SHA = "0" * 40
 """All-zeros SHA git uses on the pre-push stdin protocol to mean "no commit
@@ -478,13 +536,14 @@ def check_repo(repo: RepoConfig) -> RepoStatus:
         fetch_result = fetch_with_retry(repo.repo_path, base)
 
         if not fetch_result.ok:
+            _log_fetch_failure(repo.repo_path, base, fetch_result.error)
             branch_statuses.append(
                 BranchStatus(
                     base=base,
                     behind=0,
                     ahead_of_base=0,
                     kind=StatusKind.CHECK_FAILED,
-                    reason="fetch failed — check network/SSH access",
+                    reason=fetch_failure_reason(fetch_result.error),
                 )
             )
             continue
@@ -564,6 +623,54 @@ def check_repo(repo: RepoConfig) -> RepoStatus:
         branch_statuses=branch_statuses,
         failure_reason=None,
     )
+
+
+def classify_fetch_error(fetch_error_text: str | None) -> str:
+    """Short human label for why a fetch failed, from git's stderr / our timeout text.
+
+    Never raises; unrecognised or empty text yields "other" so a new git error
+    string degrades to a generic label rather than a wrong specific one.
+    """
+    lowered_error_text = (fetch_error_text or "").lower()
+    for cause_label, needles in _FETCH_ERROR_RULES:
+        if any(needle in lowered_error_text for needle in needles):
+            return cause_label
+    return "other"
+
+
+def _first_error_line(fetch_error_text: str | None) -> str:
+    for raw_line in (fetch_error_text or "").splitlines():
+        stripped_line = " ".join(raw_line.split())
+        if stripped_line:
+            diagnostic_text = _ERROR_LINE_NOISE_PREFIX.sub("", stripped_line, count=1)
+            return (diagnostic_text or stripped_line)[:FETCH_ERROR_EXCERPT_CAP]
+    return ""
+
+
+def fetch_failure_reason(fetch_error_text: str | None) -> str:
+    """User-facing `BranchStatus.reason` for a failed fetch: cause label + first stderr line."""
+    cause_label = classify_fetch_error(fetch_error_text)
+    error_excerpt = _first_error_line(fetch_error_text)
+    if not error_excerpt:
+        return f"fetch failed ({cause_label})"
+    return f"fetch failed ({cause_label}): {error_excerpt}"
+
+
+def _log_fetch_failure(repo_path: str, base: str, fetch_error_text: str | None) -> None:
+    """Append the full (single-line, capped) fetch error to the app log. Never raises."""
+    collapsed_error_text = " | ".join(
+        " ".join(raw_line.split())
+        for raw_line in (fetch_error_text or "").splitlines()
+        if raw_line.strip()
+    )
+    cause_label = classify_fetch_error(fetch_error_text)
+    try:
+        log.append(
+            f"[FAIL] fetch failed for {repo_path} (base {base}, cause {cause_label}): "
+            f"{collapsed_error_text[:FETCH_ERROR_LOG_CAP] or 'no error output'}"
+        )
+    except OSError:
+        pass
 
 
 def fetch_with_retry(repo_path: str, base: str) -> FetchResult:
