@@ -8,6 +8,7 @@ What NOT to Use.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -22,6 +23,10 @@ from base_branch_watch.core.models import (
 )
 
 GIT = shutil.which("git") or "/usr/bin/git"
+
+_ERROR_LINE_NOISE_PREFIX = re.compile(
+    r"^(?:(?:fatal|error): )?(?:unable to access '[^']*': )?", re.IGNORECASE
+)
 
 FETCH_ERROR_EXCERPT_CAP = 60
 FETCH_ERROR_LOG_CAP = 1000
@@ -637,7 +642,8 @@ def _first_error_line(fetch_error_text: str | None) -> str:
     for raw_line in (fetch_error_text or "").splitlines():
         stripped_line = " ".join(raw_line.split())
         if stripped_line:
-            return stripped_line[:FETCH_ERROR_EXCERPT_CAP]
+            diagnostic_text = _ERROR_LINE_NOISE_PREFIX.sub("", stripped_line, count=1)
+            return (diagnostic_text or stripped_line)[:FETCH_ERROR_EXCERPT_CAP]
     return ""
 
 

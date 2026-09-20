@@ -267,12 +267,83 @@ def test_fetch_failure_reason_uses_first_stderr_line_and_never_says_ssh_for_http
 
     reason = git_ops.fetch_failure_reason(https_error_text)
 
-    assert reason == (
-        "fetch failed (network unreachable): fatal: unable to access "
-        "'https://github.com/o/r.git/': Could"
-    )
+    assert reason == "fetch failed (network unreachable): Could not resolve host: github.com"
     assert "ssh" not in reason.lower()
     assert "second line" not in reason
+
+
+@pytest.mark.parametrize(
+    "fetch_error_text, expected_reason",
+    [
+        (
+            "fatal: unable to access 'https://github.com/o/r.git/': "
+            "Could not resolve host: github.com\n",
+            "fetch failed (network unreachable): Could not resolve host: github.com",
+        ),
+        (
+            "fatal: unable to access 'https://github.com/o/r.git/': "
+            "Failed to connect to github.com port 443 after 75003 ms: Couldn't connect to server\n",
+            "fetch failed (network unreachable): "
+            "Failed to connect to github.com port 443 after 75003 ms: Cou",
+        ),
+        (
+            "fatal: unable to access 'https://git.corp.example/o/r.git/': "
+            "SSL certificate problem: unable to get local issuer certificate\n",
+            "fetch failed (tls certificate problem): "
+            "SSL certificate problem: unable to get local issuer certific",
+        ),
+        (
+            "fatal: unable to access 'https://github.com/o/r.git/': "
+            "The requested URL returned error: 403\n",
+            "fetch failed (auth or access denied): The requested URL returned error: 403",
+        ),
+        (
+            "fatal: couldn't find remote ref main\n",
+            "fetch failed (base branch not found on origin): couldn't find remote ref main",
+        ),
+        (
+            "error: cannot lock ref 'refs/remotes/origin/main': is at abc but expected def\n",
+            "fetch failed (ref locked): "
+            "cannot lock ref 'refs/remotes/origin/main': is at abc but ex",
+        ),
+    ],
+)
+def test_fetch_failure_reason_excerpt_starts_with_diagnostic_not_git_prefix(
+    fetch_error_text, expected_reason
+):
+    assert git_ops.fetch_failure_reason(fetch_error_text) == expected_reason
+
+
+@pytest.mark.parametrize(
+    "fetch_error_text, expected_reason",
+    [
+        (
+            "git@github.com: Permission denied (publickey).\n",
+            "fetch failed (auth or access denied): git@github.com: Permission denied (publickey).",
+        ),
+        (
+            "ssh: Could not resolve hostname github.com: nodename nor servname provided\n",
+            "fetch failed (network unreachable): "
+            "ssh: Could not resolve hostname github.com: nodename nor ser",
+        ),
+        ("fetch timed out after 15s", "fetch failed (timeout): fetch timed out after 15s"),
+        ("fatal: ", "fetch failed (other): fatal:"),
+    ],
+)
+def test_fetch_failure_reason_leaves_non_matching_first_line_intact(
+    fetch_error_text, expected_reason
+):
+    assert git_ops.fetch_failure_reason(fetch_error_text) == expected_reason
+
+
+def test_fetch_failure_reason_classifies_on_original_text_not_stripped_excerpt():
+    error_text = (
+        "fatal: unable to access 'https://github.com/o/r.git/': "
+        "The requested URL returned error: 503\n"
+    )
+
+    assert git_ops.classify_fetch_error(error_text) == "remote server error"
+    assert git_ops.fetch_failure_reason(error_text).startswith("fetch failed (remote server error)")
 
 
 def test_fetch_failure_reason_caps_excerpt_length():
@@ -281,7 +352,7 @@ def test_fetch_failure_reason_caps_excerpt_length():
     reason = git_ops.fetch_failure_reason(long_error_text)
 
     assert git_ops.FETCH_ERROR_EXCERPT_CAP == 60
-    assert reason == "fetch failed (other): " + "fatal: " + "x" * 53
+    assert reason == "fetch failed (other): " + "x" * 60
 
 
 def test_fetch_failure_reason_without_error_text_has_label_only():
@@ -367,8 +438,7 @@ def test_check_repo_keeps_reason_short_but_logs_full_stderr_line(
 
     reason = status.branch_statuses[0].reason
     assert reason == (
-        "fetch failed (auth or access denied): fatal: unable to access "
-        "'https://github.com/o/r.git/': The r"
+        "fetch failed (auth or access denied): The requested URL returned error: 403"
     )
     assert "ssh" not in reason.lower()
     assert log.log_path().read_text().splitlines() == [
