@@ -78,7 +78,14 @@ _FETCH_ERROR_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
         ),
     ),
     ("origin is not a git repository", ("does not appear to be a git repository",)),
+    # EDEADLK from open(): macOS refuses to download an iCloud-evicted (dataless)
+    # file for a background process such as the LaunchAgent.
+    ("iCloud-evicted .git file", ("resource deadlock avoided",)),
 )
+
+SF_DATALESS = 0x40000000
+"""macOS st_flags bit set on a file whose contents iCloud has evicted. Not
+exposed by the stat module."""
 
 ZERO_SHA = "0" * 40
 """All-zeros SHA git uses on the pre-push stdin protocol to mean "no commit
@@ -120,8 +127,29 @@ def detect_default_branch(repo_path: str, timeout: int = 10) -> str | None:
     return None
 
 
+def _remove_dataless_fetch_head(repo_path: str) -> None:
+    """Delete `.git/FETCH_HEAD` if iCloud evicted it. Never raises.
+
+    A background process cannot materialize a dataless file (open() fails with
+    EDEADLK), so the fetch would fail forever. FETCH_HEAD is a throwaway file
+    git rewrites on every fetch, so removing the placeholder is safe.
+    """
+    fetch_head_path = os.path.join(repo_path, ".git", "FETCH_HEAD")
+    try:
+        if not os.lstat(fetch_head_path).st_flags & SF_DATALESS:
+            return
+        os.unlink(fetch_head_path)
+    except (OSError, AttributeError):
+        return
+    try:
+        log.append(f"[INFO] removed iCloud-evicted FETCH_HEAD in {repo_path}")
+    except OSError:
+        pass
+
+
 def fetch(repo_path: str, base: str, timeout: int = 15) -> FetchResult:
     """`git fetch origin <base> --quiet`. Never raises on nonzero exit."""
+    _remove_dataless_fetch_head(repo_path)
     try:
         result = _run_git(repo_path, ["fetch", "--quiet", "origin", "--", base], timeout)
     except subprocess.TimeoutExpired:
