@@ -246,6 +246,10 @@ REAL_GIT_FETCH_ERRORS = [
         "The requested URL returned error: 502\n",
         "remote server error",
     ),
+    (
+        "error: cannot open '.git/FETCH_HEAD': Resource deadlock avoided\n",
+        "iCloud-evicted .git file",
+    ),
     # Generic git trailer alone must not be guessed into a specific cause.
     ("fatal: Could not read from remote repository.\n", "other"),
     ("", "other"),
@@ -533,3 +537,59 @@ def test_check_repo_no_common_ancestor_is_check_failed_not_no_conflict(
     assert branch_status.kind == StatusKind.CHECK_FAILED
     assert branch_status.conflict_paths == []
     assert branch_status.reason == "conflict check failed — local git error"
+
+
+def _stat_with_flags(st_flags: int):
+    class _Stat:
+        pass
+
+    fake_stat = _Stat()
+    fake_stat.st_flags = st_flags
+    return fake_stat
+
+
+def test_fetch_removes_dataless_fetch_head_before_running_git(tmp_path, bbw_config_dir):
+    git_dir = tmp_path / ".git"
+    git_dir.mkdir()
+    fetch_head_path = git_dir / "FETCH_HEAD"
+    fetch_head_path.write_text("abc\n")
+    ok_result = subprocess.CompletedProcess(args=["git"], returncode=0, stdout="", stderr="")
+    fetch_head_existed_at_git_run: list[bool] = []
+
+    def fake_run_git(*_args, **_kwargs):
+        fetch_head_existed_at_git_run.append(fetch_head_path.exists())
+        return ok_result
+
+    with (
+        patch(
+            "base_branch_watch.core.git_ops.os.lstat",
+            return_value=_stat_with_flags(git_ops.SF_DATALESS),
+        ),
+        patch("base_branch_watch.core.git_ops._run_git", side_effect=fake_run_git),
+    ):
+        result = git_ops.fetch(str(tmp_path), "main")
+
+    assert result.ok is True
+    assert fetch_head_existed_at_git_run == [False]
+
+
+def test_fetch_keeps_materialized_fetch_head(tmp_path):
+    git_dir = tmp_path / ".git"
+    git_dir.mkdir()
+    fetch_head_path = git_dir / "FETCH_HEAD"
+    fetch_head_path.write_text("abc\n")
+    ok_result = subprocess.CompletedProcess(args=["git"], returncode=0, stdout="", stderr="")
+
+    with patch("base_branch_watch.core.git_ops._run_git", return_value=ok_result):
+        git_ops.fetch(str(tmp_path), "main")
+
+    assert fetch_head_path.exists()
+
+
+def test_fetch_without_fetch_head_does_not_raise(tmp_path):
+    ok_result = subprocess.CompletedProcess(args=["git"], returncode=0, stdout="", stderr="")
+
+    with patch("base_branch_watch.core.git_ops._run_git", return_value=ok_result):
+        result = git_ops.fetch(str(tmp_path), "main")
+
+    assert result.ok is True
