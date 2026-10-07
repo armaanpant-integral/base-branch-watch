@@ -736,7 +736,9 @@ class BaseBranchWatchApp(rumps.App):
             suffix = f"check failed — {bs.reason or 'unknown error'} ({bs.base})"
         else:
             suffix = f"{bs.behind} behind ({bs.base})"
-        return f"[OK] {status.name}: {suffix}"
+        is_check_failed = bs is not None and bs.kind == StatusKind.CHECK_FAILED
+        level = "FAIL" if is_check_failed else "OK"
+        return f"[{level}] {status.name}: {suffix}"
 
     def _merge_pr_statuses(
         self, statuses: list[RepoStatus], fresh_pr_statuses: dict[str, PrStatus]

@@ -630,3 +630,22 @@ def test_check_all_renders_pr_row_from_fake_batch_result_without_raising(app, mo
     assert status.repo_path in app._pr_items
     assert app._pr_items[status.repo_path].title == "⚪ myrepo: no open PR (main)"
     assert app._pr_statuses[status.repo_path] is pr_status
+
+
+def test_log_status_line_check_failed_base_is_labelled_fail(app):
+    line = app._log_status_line(_check_failed_single_base_status(name="repo-h"))
+
+    assert line.startswith("[FAIL] repo-h: ")
+    assert "(main)" in line
+
+
+def test_log_status_line_non_failed_bases_stay_ok(app):
+    up_to_date = _status(
+        "repo-u",
+        branch_statuses=[
+            BranchStatus(base="main", behind=0, ahead_of_base=0, kind=StatusKind.UP_TO_DATE)
+        ],
+    )
+
+    assert app._log_status_line(up_to_date) == "[OK] repo-u: up to date"
+    assert app._log_status_line(_diverged_status("repo-d")).startswith("[OK] repo-d: ")
