@@ -22,12 +22,14 @@ from base_branch_watch.core.models import IncomingCommit
 
 
 def prompt_push_anyway(message: str) -> bool:
-    """D-08/D-09: fail-closed /dev/tty prompt with an env-var escape hatch.
+    """D-08/D-09: /dev/tty prompt with an env-var escape hatch.
 
     BBWATCH_SKIP_GATE=1 bypasses entirely, without ever opening /dev/tty.
     Otherwise reads the confirmation from /dev/tty -- never sys.stdin, which
     git repurposes for ref-update data during pre-push. If /dev/tty cannot
-    be opened at all (no controlling terminal), fail closed: abort.
+    be opened at all (no controlling terminal, e.g. a push run by an IDE or
+    agent), nobody can answer: print the warning to stderr and allow the push
+    rather than force a blanket `--no-verify`.
     """
     if os.environ.get("BBWATCH_SKIP_GATE") == "1":
         return True
@@ -37,11 +39,10 @@ def prompt_push_anyway(message: str) -> bool:
             answer = tty.readline().strip().lower()
     except OSError:
         print(
-            "No terminal available to confirm; aborting push. "
-            "Re-run with BBWATCH_SKIP_GATE=1 to bypass.",
+            f"{message}\nNo terminal available to confirm; allowing push.",
             file=sys.stderr,
         )
-        return False
+        return True
     return answer == "y"
 
 
@@ -114,7 +115,7 @@ def main(argv: list[str] | None = None) -> int:
             if result is None:
                 # Undeterminable (timeout, unresolvable ref, unrelated
                 # histories, fetch failure surviving the retry above) --
-                # gates the push, fail-closed default abort (D-08), but is
+                # gates the push (prompt; abort on `n`), but is
                 # NOT necessarily a real conflict -- the prompt message
                 # below must not overclaim.
                 gating = True
