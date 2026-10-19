@@ -22,7 +22,7 @@ from base_branch_watch.core.models import IncomingCommit
 
 
 def prompt_push_anyway(message: str) -> bool:
-    """D-08/D-09: fail-closed /dev/tty prompt with an env-var escape hatch.
+    """D-08/D-09: /dev/tty prompt with an env-var escape hatch.
 
     BBWATCH_SKIP_GATE=1 bypasses entirely, without ever opening /dev/tty.
     Otherwise reads the confirmation from /dev/tty -- never sys.stdin, which
@@ -115,7 +115,7 @@ def main(argv: list[str] | None = None) -> int:
             if result is None:
                 # Undeterminable (timeout, unresolvable ref, unrelated
                 # histories, fetch failure surviving the retry above) --
-                # gates the push, fail-closed default abort (D-08), but is
+                # gates the push (prompt; abort on `n`), but is
                 # NOT necessarily a real conflict -- the prompt message
                 # below must not overclaim.
                 gating = True
