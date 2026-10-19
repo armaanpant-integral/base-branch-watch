@@ -87,6 +87,14 @@ class OsascriptNotifier:
         lines = [f"{status.name}: {_short_status(status)}" for status in statuses]
         body = _build_body(lines)
 
+        self._display(body, title, subtitle)
+
+    def send_message(self, title: str, body: str) -> None:
+        """One-off banner not tied to any repo (e.g. "update available")."""
+        self._display(_build_body(body.splitlines()), title, "Base Branch Watch")
+
+    @staticmethod
+    def _display(body: str, title: str, subtitle: str) -> None:
         script = (
             f'display notification "{_escape(body)}" with title "{_escape(title)}" '
             f'subtitle "{_escape(subtitle)}" sound name "Glass"'
