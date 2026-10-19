@@ -106,3 +106,33 @@ def test_hook_skip_gate_env_bypasses(
 
     assert exit_code == 0
     assert tty_opened["called"] is False
+
+
+def test_hook_gates_when_fetch_fails_even_if_stale_ref_looks_clean(
+    fixture_repos, default_branch_name, bbw_config_dir, monkeypatch, capsys
+):
+    _origin, clone_path = fixture_repos
+    _configure_repo(clone_path, default_branch_name)
+    local_sha = git_ops.resolve_ref(clone_path, "HEAD")
+    assert local_sha is not None
+
+    monkeypatch.setattr("sys.stdin", io.StringIO(_pre_push_line(default_branch_name, local_sha)))
+    monkeypatch.chdir(clone_path)
+    monkeypatch.setattr(
+        git_ops,
+        "fetch_with_retry",
+        lambda repo_path, base: git_ops.FetchResult(ok=False, error="network down"),
+    )
+    prompts: list[str] = []
+
+    def fake_prompt(message: str) -> bool:
+        prompts.append(message)
+        return False
+
+    monkeypatch.setattr(hook, "prompt_push_anyway", fake_prompt)
+
+    exit_code = hook.main(["origin", "git@example.com:test.git"])
+
+    assert exit_code != 0
+    assert len(prompts) == 1
+    assert "Could not determine" in prompts[0]
