@@ -20,7 +20,7 @@ from AppKit import NSAlert, NSApplication, NSOpenPanel, NSWindowCollectionBehavi
 
 from base_branch_watch import cli
 from base_branch_watch.app import menu_builder
-from base_branch_watch.core import config, git_ops, log, pr_status, state
+from base_branch_watch.core import config, git_ops, log, pr_status, self_update, state
 from base_branch_watch.core.models import (
     MenuItemSpec,
     PrStatus,
@@ -86,6 +86,13 @@ class BaseBranchWatchApp(rumps.App):
         self.edit_menu: rumps.MenuItem | None = None
         self._notifier: Notifier = OsascriptNotifier()
         self._state: state.State = state.load_state()
+        # Self-update check: None checkout root = not a source install, so the
+        # check is disabled. Monotonic -inf sentinel (WR-03) => first cycle
+        # always checks ("once at launch"), then at most once per interval.
+        self._checkout_root: str | None = self_update.checkout_root()
+        self._last_update_checked_at = float("-inf")
+        self._update_info: self_update.UpdateInfo | None = None
+        self._update_item: rumps.MenuItem | None = None
 
         self._build_menu_shell()
         self._backfill_hooks()
@@ -428,6 +435,63 @@ class BaseBranchWatchApp(rumps.App):
         foreign hook is refused and left untouched (D-03)."""
         for repo in self.cfg.repos:
             self._install_hook_for(repo.repo_path)
+
+    # -- self-update ---------------------------------------------------------
+
+    def _maybe_check_for_update(self) -> None:
+        """Daily check of the app's own checkout against origin; surfaces a
+        menu row plus one notification per new upstream SHA. Never raises --
+        an update-check problem must not disturb the repo poll cycle."""
+        if self._checkout_root is None:
+            return
+        now = time.monotonic()
+        if now - self._last_update_checked_at < self_update.UPDATE_CHECK_INTERVAL_SECONDS:
+            return
+        self._last_update_checked_at = now
+        try:
+            self._update_info = self_update.check_for_update(self._checkout_root)
+            self._render_update_item(self._update_info)
+            info = self._update_info
+            if info is not None and state.should_notify_update(self._state, info.remote_sha):
+                self._notifier.send_message(
+                    "Base Branch Watch update available",
+                    f"{info.behind} new commit(s) on {info.base} - open the menu for details",
+                )
+                self._state = state.mark_notified_update(self._state, info.remote_sha)
+                state.save_state(self._state)
+        except Exception as exc:  # noqa: BLE001 - isolate from the poll cycle
+            log.append(f"[FAIL] update check raised: {exc!r}")
+
+    def _render_update_item(self, info: self_update.UpdateInfo | None) -> None:
+        """Add/replace/remove the 'Update available' row. Rebuilt rather than
+        mutated: its title (commit count) is its rumps dict key (see the
+        _repo_item_keys note in __init__)."""
+        if self._update_item is not None:
+            del self.menu[self._update_item.title]
+            self._update_item = None
+        if info is None:
+            return
+        self._update_item = rumps.MenuItem(
+            f"⬆️ Update available ({info.behind} new commit{'s' if info.behind != 1 else ''})…",
+            callback=self._show_update_info,
+        )
+        self.menu.insert_before(OPEN_LOG_TITLE, self._update_item)
+
+    def _show_update_info(self, _sender) -> None:
+        info = self._update_info
+        if info is None:
+            return
+        commits = "\n".join(f"  - {subject}" for subject in info.subjects)
+        more = info.behind - len(info.subjects)
+        if more > 0:
+            commits += f"\n  ...and {more} more"
+        self._show_alert(
+            "Update available",
+            f"{info.behind} new commit(s) on origin/{info.base}:\n{commits}\n\n"
+            f"To update:\n"
+            f"1. cd {self._checkout_root} && git pull --ff-only\n"
+            f"2. Choose Quit from this menu - launchd restarts the app on the new code.",
+        )
 
     # -- static menu actions -------------------------------------------------
 
@@ -852,6 +916,7 @@ class BaseBranchWatchApp(rumps.App):
                 if pr_status_for_repo is not None:
                     pr_spec = menu_builder._pr_row(pr_status_for_repo, status.name)
                     self._render_pr_row(status.repo_path, pr_spec)
+            self._maybe_check_for_update()
         except Exception as exc:  # noqa: BLE001 - top-level poll-cycle guard, see CR-04
             # Never let a single bad cycle kill the whole polling loop (the
             # "never raises" convention core/git_ops.py established). Log

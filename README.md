@@ -62,7 +62,7 @@ python -m base_branch_watch.cli install-agent "$(pwd)/.venv/bin/python3"
 
 > **Don't omit the interpreter path above.** The installer's auto-detect can pick your system Python instead of this venv, producing a LaunchAgent that silently fails at every login. Always pass your venv's interpreter path explicitly, as shown.
 
-Full setup details, macOS Full Disk Access / notification-permission gotchas, and uninstall steps: see [INSTALL.md](INSTALL.md).
+Full setup details, macOS Full Disk Access / notification-permission gotchas, uninstall and update steps: see [INSTALL.md](INSTALL.md). The app checks for new versions of itself daily and shows "Update available" in the menu.
 
 ## Using it
 

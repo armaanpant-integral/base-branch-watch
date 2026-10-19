@@ -25,6 +25,11 @@ State = dict[str, dict[str, str]]
 # collide with a real configured base branch.
 UNPUSHED_KEY = "\x00unpushed"
 
+# App-level (not per-repo) slot for the last-notified self-update SHA. Same
+# NUL-prefix collision guarantee as UNPUSHED_KEY, so it can never clash with a
+# real watched repo path.
+SELF_UPDATE_KEY = "\x00self-update"
+
 
 def _state_path() -> Path:
     return config_dir() / STATE_FILENAME
@@ -102,4 +107,15 @@ def clear_notified_unpushed(state: State, repo_path: str) -> State:
     a notification even if it happens to match a previously-notified value.
     """
     state.get(repo_path, {}).pop(UNPUSHED_KEY, None)
+    return state
+
+
+def should_notify_update(state: State, remote_sha: str) -> bool:
+    """True unless remote_sha is already the last-notified self-update SHA."""
+    return state.get(SELF_UPDATE_KEY, {}).get("sha") != remote_sha
+
+
+def mark_notified_update(state: State, remote_sha: str) -> State:
+    """Record remote_sha as the last-notified self-update SHA. Returns state."""
+    state.setdefault(SELF_UPDATE_KEY, {})["sha"] = remote_sha
     return state

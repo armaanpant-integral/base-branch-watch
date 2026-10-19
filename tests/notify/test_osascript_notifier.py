@@ -106,3 +106,16 @@ def test_send_digest_empty_list_makes_zero_osascript_calls():
         notifier.send_digest([])
 
     mock_run.assert_not_called()
+
+
+def test_send_message_invokes_osascript_once_with_escaped_title_and_body():
+    notifier = OsascriptNotifier()
+    with patch("base_branch_watch.notify.osascript_notifier.subprocess.run") as mock_run:
+        notifier.send_message('Update "now"', "3 new commits")
+
+    assert mock_run.call_count == 1
+    args = mock_run.call_args.args[0]
+    assert args[:2] == ["osascript", "-e"]
+    script = args[2]
+    assert 'with title "Update \\"now\\""' in script
+    assert 'display notification "3 new commits"' in script

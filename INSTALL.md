@@ -64,6 +64,29 @@ whatever `python3` happens to be first on the *login environment's* bare
 package into. Baking in the absolute path at install time avoids this
 entirely (same reasoning as the project's git-hook installer).
 
+## Updating
+
+base-branch-watch runs straight from your git checkout (the editable install
+above), so an update is a `git pull`:
+
+```sh
+cd /path/to/base-branch-watch
+git pull --ff-only
+```
+
+Then choose **Quit** from the menu bar item. `KeepAlive` (see the caveat
+below) makes launchd relaunch the app immediately, now running the new code.
+The pre-push hook needs no restart - it loads the new code on your next push.
+You don't need to re-run the install script unless the plist template or
+`scripts/` changed.
+
+You don't have to remember to check: the app fetches its own repo once at
+launch and then daily. When the checkout is behind `origin`'s default branch
+it shows **Update available (N new commits)...** in the menu (click it for
+the commit list and these steps) and sends one notification per new upstream
+commit. The check is skipped if the app isn't running from a source checkout,
+or the checkout is on a branch other than the default branch.
+
 ## Uninstall
 
 ```sh

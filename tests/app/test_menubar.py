@@ -649,3 +649,109 @@ def test_log_status_line_non_failed_bases_stay_ok(app):
 
     assert app._log_status_line(up_to_date) == "[OK] repo-u: up to date"
     assert app._log_status_line(_diverged_status("repo-d")).startswith("[OK] repo-d: ")
+
+
+# -- self-update check ------------------------------------------------------
+
+
+def _update_info(behind=3, sha="remote-sha-1", subjects=None):
+    return menubar.self_update.UpdateInfo(
+        base="main",
+        behind=behind,
+        remote_sha=sha,
+        subjects=subjects if subjects is not None else ["add thing", "fix other"],
+    )
+
+
+@pytest.fixture()
+def update_app(app, monkeypatch):
+    """The app with a (fake) source checkout and a captured notifier."""
+    app._checkout_root = "/fake/checkout"
+    app._last_update_checked_at = float("-inf")
+    app._notifier = MagicMock()
+    monkeypatch.setattr(menubar.state, "save_state", lambda s: None)
+    return app
+
+
+def test_update_found_adds_menu_row_and_notifies_once(update_app, monkeypatch):
+    monkeypatch.setattr(menubar.self_update, "check_for_update", lambda root: _update_info())
+
+    update_app._maybe_check_for_update()
+
+    assert update_app._update_item is not None
+    assert update_app._update_item.title == "⬆️ Update available (3 new commits)…"
+    update_app._notifier.send_message.assert_called_once()
+    title, body = update_app._notifier.send_message.call_args.args
+    assert "3" in title or "3" in body
+
+
+def test_same_remote_sha_does_not_notify_again(update_app, monkeypatch):
+    monkeypatch.setattr(menubar.self_update, "check_for_update", lambda root: _update_info())
+
+    update_app._maybe_check_for_update()
+    update_app._last_update_checked_at = float("-inf")
+    update_app._maybe_check_for_update()
+
+    assert update_app._notifier.send_message.call_count == 1
+
+
+def test_new_remote_sha_notifies_again(update_app, monkeypatch):
+    infos = iter([_update_info(sha="sha-a"), _update_info(behind=4, sha="sha-b")])
+    monkeypatch.setattr(menubar.self_update, "check_for_update", lambda root: next(infos))
+
+    update_app._maybe_check_for_update()
+    update_app._last_update_checked_at = float("-inf")
+    update_app._maybe_check_for_update()
+
+    assert update_app._notifier.send_message.call_count == 2
+    assert update_app._update_item.title == "⬆️ Update available (4 new commits)…"
+
+
+def test_up_to_date_removes_update_row(update_app, monkeypatch):
+    results = iter([_update_info(), None])
+    monkeypatch.setattr(menubar.self_update, "check_for_update", lambda root: next(results))
+
+    update_app._maybe_check_for_update()
+    update_app._last_update_checked_at = float("-inf")
+    update_app._maybe_check_for_update()
+
+    assert update_app._update_item is None
+
+
+def test_update_check_runs_at_most_once_per_interval(update_app, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        menubar.self_update, "check_for_update", lambda root: calls.append(root) or None
+    )
+
+    update_app._maybe_check_for_update()
+    update_app._maybe_check_for_update()
+
+    assert calls == ["/fake/checkout"]
+
+
+def test_no_update_check_without_source_checkout(update_app, monkeypatch):
+    update_app._checkout_root = None
+    monkeypatch.setattr(
+        menubar.self_update,
+        "check_for_update",
+        lambda root: pytest.fail("must not check without a checkout"),
+    )
+
+    update_app._maybe_check_for_update()
+
+    assert update_app._update_item is None
+
+
+def test_clicking_update_row_shows_commits_and_update_steps(update_app, monkeypatch):
+    captured = _capture_alert(monkeypatch)
+    monkeypatch.setattr(menubar.self_update, "check_for_update", lambda root: _update_info())
+    update_app._maybe_check_for_update()
+
+    update_app._show_update_info(None)
+
+    assert "add thing" in captured["message"]
+    assert "fix other" in captured["message"]
+    assert "git pull --ff-only" in captured["message"]
+    assert "/fake/checkout" in captured["message"]
+    assert "Quit" in captured["message"]
