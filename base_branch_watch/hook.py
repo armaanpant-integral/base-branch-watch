@@ -97,7 +97,11 @@ def main(argv: list[str] | None = None) -> int:
             # not masquerade as "undeterminable -> gate" with a misleading
             # "conflicts detected" message -- same discipline check_repo's
             # poller path already applies via fetch_with_retry.
-            git_ops.fetch_with_retry(matched_repo.repo_path, base)
+            fetch_result = git_ops.fetch_with_retry(matched_repo.repo_path, base)
+            if not fetch_result.ok:
+                # Retry exhausted: origin/<base> may be stale, so a "clean"
+                # merge-tree below proves nothing -- gate (not a real conflict).
+                gating = True
             origin_ref = f"origin/{base}"
 
             mb = git_ops.merge_base(matched_repo.repo_path, local_sha, origin_ref)
