@@ -48,7 +48,7 @@ def _patch_no_tty(monkeypatch) -> dict:
     return tty_opened
 
 
-def test_hook_gate_aborts_on_conflict_without_tty(
+def test_hook_gate_warns_and_allows_on_conflict_without_tty(
     fixture_repos_conflict_overlap, default_branch_name, bbw_config_dir, monkeypatch, capsys
 ):
     _origin, clone_path = fixture_repos_conflict_overlap
@@ -62,10 +62,12 @@ def test_hook_gate_aborts_on_conflict_without_tty(
 
     exit_code = hook.main(["origin", "git@example.com:test.git"])
 
-    assert exit_code != 0
+    assert exit_code == 0
     captured = capsys.readouterr()
     assert default_branch_name in captured.out
     assert "⚠️" in captured.out
+    assert "Potential conflicts detected" in captured.err
+    assert "No terminal available" in captured.err
 
 
 def test_hook_clean_repo_exits_zero_no_prompt(
