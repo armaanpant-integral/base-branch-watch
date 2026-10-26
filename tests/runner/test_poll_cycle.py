@@ -129,6 +129,29 @@ def test_forget_clears_pr_memory_for_removed_repos():
     assert repo.repo_path not in cycle.last_pr_checked_at
 
 
+def test_a_re_added_repo_is_checked_on_the_next_cycle_not_after_the_floor():
+    repo = _repo()
+    fake = FakeBatch({repo.repo_path: _status()}, {repo.repo_path: _open()})
+    cycle = _cycle(fake)
+    cycle.run([repo], {}, now=1000.0)
+
+    cycle.forget([repo.repo_path])
+    cycle.run([repo], {}, now=1001.0)
+
+    assert fake.pr_repo_paths_seen[-1] == {repo.repo_path}
+
+
+def test_result_pr_statuses_is_a_snapshot_not_the_cycles_live_memory():
+    repo = _repo()
+    fake = FakeBatch({repo.repo_path: _status()}, {repo.repo_path: _open()})
+    cycle = _cycle(fake)
+
+    result = cycle.run([repo], {}, now=0.0)
+    result.pr_statuses.clear()
+
+    assert repo.repo_path in cycle.pr_statuses
+
+
 # -- MERGED / CLOSED one-cycle collapse ---------------------------------------
 
 

@@ -100,7 +100,7 @@ class PollCycle:
         digest = notify_policy.decide_digest(notify_state, statuses)
         return CycleResult(
             statuses=statuses,
-            pr_statuses=self.pr_statuses,
+            pr_statuses=dict(self.pr_statuses),
             digest_statuses=digest.statuses,
             state=digest.state,
             log_lines=[status_log_line(status) for status in statuses],
