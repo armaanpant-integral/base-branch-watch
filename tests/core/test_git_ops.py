@@ -150,6 +150,7 @@ def test_check_repo_fetch_failure_is_distinct_not_bogus_behind(
     branch_status = status.branch_statuses[0]
     assert branch_status.kind == StatusKind.CHECK_FAILED
     assert branch_status.behind == 0
+    assert branch_status.head_sha is None
     # Real git stderr for a remote path that is gone, not a canned "SSH" guess.
     assert branch_status.reason is not None
     assert branch_status.reason.startswith("fetch failed (origin is not a git repository)")

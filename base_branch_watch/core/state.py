@@ -17,7 +17,8 @@ from base_branch_watch.core.config import config_dir
 
 STATE_FILENAME = "state.json"
 
-# {repo_path: {base: last_notified_sha}}
+# {repo_path: {base: last_notified_sha}}, plus the reserved NUL-prefixed keys
+# core.notify_policy stores alongside them (unpushed count, self-update SHA).
 State = dict[str, dict[str, str]]
 
 
