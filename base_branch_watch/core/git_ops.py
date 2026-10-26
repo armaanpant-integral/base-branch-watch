@@ -15,11 +15,7 @@ from dataclasses import dataclass
 
 from base_branch_watch.core import log
 from base_branch_watch.core.models import (
-    BranchStatus,
     IncomingCommit,
-    RepoConfig,
-    RepoStatus,
-    StatusKind,
 )
 
 GIT = shutil.which("git") or "/usr/bin/git"
@@ -520,148 +516,6 @@ def unpushed_count(repo_path: str, timeout: int = 10) -> int:
     return int(out) if out.isdigit() else 0
 
 
-def check_repo(repo: RepoConfig) -> RepoStatus:
-    """Full status: every configured base branch + repo-level unpushed count.
-
-    `unpushed` is computed once per repo (not per base) via `unpushed_count`.
-    Each base is fetched independently with one retry on failure (Pitfall
-    8) - a base whose fetch still fails after the retry gets a distinct
-    CHECK_FAILED BranchStatus (never a bogus behind count), and checking
-    continues for the repo's other bases rather than failing the whole repo.
-    Never raises.
-    """
-    name = os.path.basename(repo.repo_path.rstrip("/"))
-
-    if not os.path.isdir(os.path.join(repo.repo_path, ".git")):
-        return RepoStatus(
-            repo_path=repo.repo_path,
-            name=name,
-            current_branch=None,
-            unpushed=0,
-            branch_statuses=[],
-            failure_reason="repo folder not found — was it moved or deleted?",
-        )
-
-    if not repo.base_branches:
-        return RepoStatus(
-            repo_path=repo.repo_path,
-            name=name,
-            current_branch=None,
-            unpushed=0,
-            branch_statuses=[],
-            failure_reason="no base branches configured",
-        )
-
-    branch = current_branch(repo.repo_path)
-    unpushed = unpushed_count(repo.repo_path)
-    # Base-independent half of D-01/D-02's local-change set (working-tree
-    # diff + untracked files) — computed once per repo, mirroring how
-    # `unpushed` is hoisted above the per-base loop (02-PATTERNS.md).
-    local_wt = working_tree_paths(repo.repo_path)
-
-    branch_statuses: list[BranchStatus] = []
-    for base in repo.base_branches:
-        fetch_result = fetch_with_retry(repo.repo_path, base)
-
-        if not fetch_result.ok:
-            _log_fetch_failure(repo.repo_path, base, fetch_result.error)
-            branch_statuses.append(
-                BranchStatus(
-                    base=base,
-                    behind=0,
-                    ahead_of_base=0,
-                    kind=StatusKind.CHECK_FAILED,
-                    reason=fetch_failure_reason(fetch_result.error),
-                )
-            )
-            continue
-
-        # behind_ahead never raises (WR-02); it signals "couldn't determine"
-        # (fetch succeeded, but the local rev-list comparison itself timed
-        # out/errored) via the (-1, -1) sentinel, distinct from a genuine
-        # (0, 0) "no divergence" result.
-        behind, ahead = behind_ahead(repo.repo_path, "HEAD", f"origin/{base}")
-        if behind == -1 and ahead == -1:
-            branch_statuses.append(
-                BranchStatus(
-                    base=base,
-                    behind=0,
-                    ahead_of_base=0,
-                    kind=StatusKind.CHECK_FAILED,
-                    reason="status check failed — local git error",
-                )
-            )
-            continue
-
-        head_sha = resolve_ref(repo.repo_path, f"origin/{base}")
-
-        if behind > 0:
-            # Conflict-risk overlap check (CONFLICT-01) — only worth computing
-            # when there's an incoming range to compare against at all.
-            mb = merge_base(repo.repo_path, "HEAD", f"origin/{base}")
-            incoming = (
-                incoming_changed_paths(repo.repo_path, mb, base) if mb is not None else None
-            )
-            branch_unique = (
-                branch_unique_paths(repo.repo_path, mb) if mb is not None else None
-            )
-            if (
-                mb is None
-                or local_wt is None
-                or incoming is None
-                or branch_unique is None
-            ):
-                branch_statuses.append(
-                    BranchStatus(
-                        base=base,
-                        behind=0,
-                        ahead_of_base=0,
-                        kind=StatusKind.CHECK_FAILED,
-                        reason="conflict check failed — local git error",
-                    )
-                )
-                continue
-            local = local_wt | branch_unique
-            overlap = incoming & local
-            if overlap:
-                branch_statuses.append(
-                    BranchStatus(
-                        base=base,
-                        behind=behind,
-                        ahead_of_base=ahead,
-                        kind=StatusKind.CONFLICT_RISK,
-                        conflict_paths=sorted(overlap),
-                        head_sha=head_sha,
-                    )
-                )
-                continue
-
-        if behind > 0 and ahead > 0:
-            kind = StatusKind.DIVERGED
-        elif behind > 0:
-            kind = StatusKind.BEHIND
-        else:
-            kind = StatusKind.UP_TO_DATE
-        branch_statuses.append(
-            BranchStatus(
-                base=base,
-                behind=behind,
-                ahead_of_base=ahead,
-                kind=kind,
-                head_sha=head_sha,
-            )
-        )
-
-    return RepoStatus(
-        repo_path=repo.repo_path,
-        name=name,
-        current_branch=branch,
-        unpushed=unpushed,
-        branch_statuses=branch_statuses,
-        failure_reason=None,
-    )
-
-
 def classify_fetch_error(fetch_error_text: str | None) -> str:
     """Short human label for why a fetch failed, from git's stderr / our timeout text.
 
@@ -693,7 +547,7 @@ def fetch_failure_reason(fetch_error_text: str | None) -> str:
     return f"fetch failed ({cause_label}): {error_excerpt}"
 
 
-def _log_fetch_failure(repo_path: str, base: str, fetch_error_text: str | None) -> None:
+def log_fetch_failure(repo_path: str, base: str, fetch_error_text: str | None) -> None:
     """Append the full (single-line, capped) fetch error to the app log. Never raises."""
     collapsed_error_text = " | ".join(
         " ".join(raw_line.split())

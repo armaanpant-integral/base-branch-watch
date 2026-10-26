@@ -5,14 +5,14 @@ from unittest.mock import patch
 
 import pytest
 
-from base_branch_watch.core import git_ops, log
+from base_branch_watch.core import base_verdict, git_ops, log
 from base_branch_watch.core.models import RepoConfig, Severity, StatusKind
 
 
 def test_check_repo_behind_reports_behind_count_and_kind(fixture_repos, default_branch_name):
     _origin, clone_path = fixture_repos
 
-    status = git_ops.check_repo(
+    status = base_verdict.check_repo(
         RepoConfig(repo_path=clone_path, base_branches=[default_branch_name])
     )
 
@@ -29,7 +29,7 @@ def test_check_repo_behind_reports_behind_count_and_kind(fixture_repos, default_
 def test_check_repo_up_to_date(fixture_repos_up_to_date, default_branch_name):
     _origin, clone_path = fixture_repos_up_to_date
 
-    status = git_ops.check_repo(
+    status = base_verdict.check_repo(
         RepoConfig(repo_path=clone_path, base_branches=[default_branch_name])
     )
 
@@ -41,7 +41,7 @@ def test_check_repo_up_to_date(fixture_repos_up_to_date, default_branch_name):
 def test_check_repo_nonexistent_path_never_raises(tmp_path):
     missing = tmp_path / "does-not-exist"
 
-    status = git_ops.check_repo(RepoConfig(repo_path=str(missing), base_branches=["main"]))
+    status = base_verdict.check_repo(RepoConfig(repo_path=str(missing), base_branches=["main"]))
 
     assert status.failure_reason is not None
     assert status.worst_kind == StatusKind.CHECK_FAILED
@@ -58,7 +58,7 @@ def test_detect_default_branch_returns_fixture_default(fixture_repos, default_br
 def test_check_repo_diverged_reports_behind_and_ahead(fixture_repos_diverged, default_branch_name):
     _origin, clone_path = fixture_repos_diverged
 
-    status = git_ops.check_repo(
+    status = base_verdict.check_repo(
         RepoConfig(repo_path=clone_path, base_branches=[default_branch_name])
     )
 
@@ -74,7 +74,7 @@ def test_check_repo_diverged_reports_behind_and_ahead(fixture_repos_diverged, de
 def test_check_repo_unpushed_only(fixture_repos_unpushed, default_branch_name):
     _origin, clone_path = fixture_repos_unpushed
 
-    status = git_ops.check_repo(
+    status = base_verdict.check_repo(
         RepoConfig(repo_path=clone_path, base_branches=[default_branch_name])
     )
 
@@ -88,7 +88,7 @@ def test_check_repo_unpushed_only(fixture_repos_unpushed, default_branch_name):
 def test_check_repo_behind_and_unpushed(fixture_repos_behind_and_unpushed, default_branch_name):
     _origin, clone_path = fixture_repos_behind_and_unpushed
 
-    status = git_ops.check_repo(
+    status = base_verdict.check_repo(
         RepoConfig(repo_path=clone_path, base_branches=[default_branch_name])
     )
 
@@ -105,7 +105,7 @@ def test_check_repo_behind_and_unpushed(fixture_repos_behind_and_unpushed, defau
 def test_check_repo_multi_base_worst_wins(fixture_repos_multi_base, default_branch_name):
     origin_path, clone_path = fixture_repos_multi_base
 
-    status = git_ops.check_repo(
+    status = base_verdict.check_repo(
         RepoConfig(repo_path=clone_path, base_branches=[default_branch_name, "release"])
     )
 
@@ -143,7 +143,7 @@ def test_check_repo_fetch_failure_is_distinct_not_bogus_behind(
 ):
     _origin, clone_path = fixture_repos_fetch_fails
 
-    status = git_ops.check_repo(
+    status = base_verdict.check_repo(
         RepoConfig(repo_path=clone_path, base_branches=[default_branch_name])
     )
 
@@ -406,7 +406,7 @@ def test_check_repo_logs_raw_fetch_error_with_repo_base_and_cause(
         "base_branch_watch.core.git_ops.fetch_with_retry",
         return_value=git_ops.FetchResult(ok=False, error=raw_error_text),
     ):
-        status = git_ops.check_repo(
+        status = base_verdict.check_repo(
             RepoConfig(repo_path=clone_path, base_branches=[default_branch_name])
         )
 
@@ -437,7 +437,7 @@ def test_check_repo_keeps_reason_short_but_logs_full_stderr_line(
         "base_branch_watch.core.git_ops.fetch_with_retry",
         return_value=git_ops.FetchResult(ok=False, error=long_first_line + "\n"),
     ):
-        status = git_ops.check_repo(
+        status = base_verdict.check_repo(
             RepoConfig(repo_path=clone_path, base_branches=[default_branch_name])
         )
 
@@ -462,7 +462,7 @@ def test_check_repo_fetch_failure_survives_log_write_error(fixture_repos, defaul
         ),
         patch("base_branch_watch.core.git_ops.log.append", side_effect=OSError("disk full")),
     ):
-        status = git_ops.check_repo(
+        status = base_verdict.check_repo(
             RepoConfig(repo_path=clone_path, base_branches=[default_branch_name])
         )
 
@@ -475,7 +475,7 @@ def test_check_repo_conflict_risk_when_local_and_incoming_overlap(
 ):
     _origin, clone_path = fixture_repos_conflict_overlap
 
-    status = git_ops.check_repo(
+    status = base_verdict.check_repo(
         RepoConfig(repo_path=clone_path, base_branches=[default_branch_name])
     )
 
@@ -492,7 +492,7 @@ def test_check_repo_behind_without_overlap_stays_behind(
 ):
     _origin, clone_path = fixture_repos_behind_no_overlap
 
-    status = git_ops.check_repo(
+    status = base_verdict.check_repo(
         RepoConfig(repo_path=clone_path, base_branches=[default_branch_name])
     )
 
@@ -502,23 +502,23 @@ def test_check_repo_behind_without_overlap_stays_behind(
     assert branch_status.conflict_paths == []
 
 
-def test_check_repo_conflict_risk_on_incoming_rename_of_locally_edited_old_path(
+def test_check_repo_incoming_rename_of_locally_edited_file_is_a_clean_merge(
     fixture_repos_incoming_rename, default_branch_name
 ):
-    """RESEARCH Pitfall 1 regression: a local branch-unique edit to file.txt
-    still overlap-matches an incoming rename of file.txt -> renamed.txt,
-    because _parse_name_status_z adds both R-record paths to the incoming
-    set. A naive --name-only parse would NOT flag this."""
+    """Origin renames file.txt -> renamed.txt while a local branch-unique commit
+    edits the old name. The paths overlap (RESEARCH Pitfall 1: both R-record
+    paths count as incoming) but git merge-tree - the authority for committed
+    work - merges it cleanly, so the menu shows DIVERGED, not CONFLICT_RISK."""
     _origin, clone_path = fixture_repos_incoming_rename
 
-    status = git_ops.check_repo(
+    status = base_verdict.check_repo(
         RepoConfig(repo_path=clone_path, base_branches=[default_branch_name])
     )
 
     assert status.failure_reason is None
     branch_status = status.branch_statuses[0]
-    assert branch_status.kind == StatusKind.CONFLICT_RISK
-    assert "file.txt" in branch_status.conflict_paths
+    assert branch_status.kind == StatusKind.DIVERGED
+    assert branch_status.conflict_paths == []
 
 
 def test_check_repo_no_common_ancestor_is_check_failed_not_no_conflict(
@@ -530,14 +530,14 @@ def test_check_repo_no_common_ancestor_is_check_failed_not_no_conflict(
     BEHIND with no warning."""
     _origin, clone_path = fixture_repos_no_common_ancestor
 
-    status = git_ops.check_repo(
+    status = base_verdict.check_repo(
         RepoConfig(repo_path=clone_path, base_branches=[default_branch_name])
     )
 
     branch_status = status.branch_statuses[0]
     assert branch_status.kind == StatusKind.CHECK_FAILED
     assert branch_status.conflict_paths == []
-    assert branch_status.reason == "conflict check failed — local git error"
+    assert branch_status.reason == "conflict check failed - local git error"
 
 
 def _stat_with_flags(st_flags: int):
@@ -612,7 +612,7 @@ def test_check_repo_records_origin_base_head_sha_for_checked_bases(
     successfully checked base must carry the post-fetch origin/<base> SHA."""
     _origin, clone_path = request.getfixturevalue(fixture_name)
 
-    status = git_ops.check_repo(
+    status = base_verdict.check_repo(
         RepoConfig(repo_path=clone_path, base_branches=[default_branch_name])
     )
 
