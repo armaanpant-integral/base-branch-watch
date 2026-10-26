@@ -593,3 +593,28 @@ def test_fetch_without_fetch_head_does_not_raise(tmp_path):
         result = git_ops.fetch(str(tmp_path), "main")
 
     assert result.ok is True
+
+
+@pytest.mark.parametrize(
+    "fixture_name",
+    [
+        "fixture_repos",  # BEHIND
+        "fixture_repos_up_to_date",  # UP_TO_DATE
+        "fixture_repos_diverged",  # DIVERGED
+        "fixture_repos_conflict_overlap",  # CONFLICT_RISK
+    ],
+)
+def test_check_repo_records_origin_base_head_sha_for_checked_bases(
+    request, fixture_name, default_branch_name
+):
+    """Notification dedupe compares against BranchStatus.head_sha, so every
+    successfully checked base must carry the post-fetch origin/<base> SHA."""
+    _origin, clone_path = request.getfixturevalue(fixture_name)
+
+    status = git_ops.check_repo(
+        RepoConfig(repo_path=clone_path, base_branches=[default_branch_name])
+    )
+
+    expected = git_ops.resolve_ref(clone_path, f"origin/{default_branch_name}")
+    assert expected is not None
+    assert status.branch_statuses[0].head_sha == expected

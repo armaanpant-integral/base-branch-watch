@@ -593,6 +593,8 @@ def check_repo(repo: RepoConfig) -> RepoStatus:
             )
             continue
 
+        head_sha = resolve_ref(repo.repo_path, f"origin/{base}")
+
         if behind > 0:
             # Conflict-risk overlap check (CONFLICT-01) — only worth computing
             # when there's an incoming range to compare against at all.
@@ -629,6 +631,7 @@ def check_repo(repo: RepoConfig) -> RepoStatus:
                         ahead_of_base=ahead,
                         kind=StatusKind.CONFLICT_RISK,
                         conflict_paths=sorted(overlap),
+                        head_sha=head_sha,
                     )
                 )
                 continue
@@ -640,7 +643,13 @@ def check_repo(repo: RepoConfig) -> RepoStatus:
         else:
             kind = StatusKind.UP_TO_DATE
         branch_statuses.append(
-            BranchStatus(base=base, behind=behind, ahead_of_base=ahead, kind=kind)
+            BranchStatus(
+                base=base,
+                behind=behind,
+                ahead_of_base=ahead,
+                kind=kind,
+                head_sha=head_sha,
+            )
         )
 
     return RepoStatus(
