@@ -25,20 +25,17 @@ from base_branch_watch.core import (
     git_ops,
     log,
     notify_policy,
-    pr_status,
     self_update,
     state,
 )
 from base_branch_watch.core.models import (
     MenuItemSpec,
-    PrStatus,
-    PrStatusKind,
     RepoStatus,
     StatusKind,
 )
 from base_branch_watch.notify.base import Notifier
 from base_branch_watch.notify.osascript_notifier import OsascriptNotifier
-from base_branch_watch.runner import batch
+from base_branch_watch.runner.poll_cycle import PollCycle
 
 ADD_REPO_TITLE = "Add Repo…"
 REMOVE_REPO_TITLE = "Remove Repo"
@@ -47,15 +44,6 @@ SET_INTERVAL_TITLE = "Set Interval…"
 REFRESH_TITLE = "Refresh Now"
 OPEN_LOG_TITLE = "Open Log"
 QUIT_TITLE = "Quit"
-
-# D-13 (04-pr-status Plan 02): gh PR-status calls are clamped to this floor
-# regardless of the configured git-status poll interval -- CI/review state
-# doesn't meaningfully change on a 30s cadence, and a gh call is a network
-# round-trip while git fetch is cheap and local. Lives here (not core/batch),
-# per RESEARCH.md's Architectural Responsibility Map: the floor is a
-# scheduling decision the app owns, batch.check_all only mechanically
-# honors the eligible-repo set this constant produces.
-PR_CHECK_FLOOR_SECONDS = 120
 
 
 class BaseBranchWatchApp(rumps.App):
@@ -80,13 +68,9 @@ class BaseBranchWatchApp(rumps.App):
         self._pr_items: dict[str, rumps.MenuItem] = {}
         self._pr_item_keys: dict[str, str] = {}
         self._pr_child_items: dict[str, dict[str, rumps.MenuItem]] = {}
-        self._pr_statuses: dict[str, PrStatus] = {}
-        # D-13's ~2min PR-check floor (Plan 02) — in-memory only (Open
-        # Question 1's recommendation, not persisted to core/state.py):
-        # resets on restart, acceptable for a handful of idempotent
-        # read-only gh calls. repo_path -> time.monotonic() of its last
-        # eligible gh call.
-        self._last_pr_checked_at: dict[str, float] = {}
+        # The poll cycle's own memory (last PR status per repo, D-13's PR-check
+        # floor timestamps) lives in runner.poll_cycle.PollCycle.
+        self._cycle = PollCycle()
         self._empty_item: rumps.MenuItem | None = None
         self._checking = False
         self.remove_menu: rumps.MenuItem | None = None
@@ -211,7 +195,7 @@ class BaseBranchWatchApp(rumps.App):
                 del self.menu[key]
             self._pr_items.pop(repo_path, None)
             self._pr_child_items.pop(repo_path, None)
-            self._pr_statuses.pop(repo_path, None)
+            self._cycle.forget([repo_path])
 
     def _render_row(self, status: RepoStatus, spec: MenuItemSpec) -> None:
         item = self._repo_items.get(status.repo_path)
@@ -750,90 +734,6 @@ class BaseBranchWatchApp(rumps.App):
             self._state = next_state
             state.save_state(self._state)
 
-    def _log_status_line(self, status: RepoStatus) -> str:
-        if status.failure_reason is not None:
-            return f"[FAIL] {status.name}: {status.failure_reason}"
-        bs = status.worst_branch_status
-        if bs is None or bs.kind == StatusKind.UP_TO_DATE:
-            suffix = "up to date" if status.unpushed == 0 else f"{status.unpushed} unpushed"
-        elif bs.kind == StatusKind.DIVERGED:
-            suffix = f"diverged — {bs.behind} behind, {bs.ahead_of_base} ahead ({bs.base})"
-        elif bs.kind == StatusKind.CHECK_FAILED:
-            suffix = f"check failed — {bs.reason or 'unknown error'} ({bs.base})"
-        else:
-            suffix = f"{bs.behind} behind ({bs.base})"
-        is_check_failed = bs is not None and bs.kind == StatusKind.CHECK_FAILED
-        level = "FAIL" if is_check_failed else "OK"
-        return f"[{level}] {status.name}: {suffix}"
-
-    def _merge_pr_statuses(
-        self, statuses: list[RepoStatus], fresh_pr_statuses: dict[str, PrStatus]
-    ) -> dict[str, PrStatus]:
-        """D-13 retention + D-03 one-cycle MERGED/CLOSED transition.
-
-        For each currently-watched repo: if this cycle fetched a fresh
-        PrStatus (repo was PR-eligible), use it, subject to two one-cycle
-        collapse routes so a terminal PR only shows MERGED/CLOSED once
-        (D-03) rather than indefinitely:
-
-        Route A -- `gh pr view` stops finding the PR entirely (its branch
-        was deleted after merge/close): a fresh NO_PR immediately following
-        a stored OPEN with a PR number probes core.pr_status.final_state
-        once; a MERGED/CLOSED result renders for this one cycle only (the
-        NEXT cycle's stored value is already NO_PR, so it naturally falls
-        back).
-
-        Route B -- `gh pr view` KEEPS finding the PR and reports it
-        MERGED/CLOSED directly (branch still exists on GitHub after merge --
-        CR-01, verified live: this is the common case, not the exception).
-        First cycle: show the fresh MERGED/CLOSED. If the STORED value was
-        already the same MERGED/CLOSED PR (i.e. this is the second+ cycle
-        seeing the same terminal PR), collapse to NO_PR instead so the
-        one-cycle confirmation doesn't linger.
-
-        If this cycle was NOT PR-eligible (repo absent from
-        fresh_pr_statuses), retain the prior stored value unchanged (no
-        stale-data indicator, per 04-UI-SPEC.md's polling note).
-        """
-        merged: dict[str, PrStatus] = {}
-        for status in statuses:
-            repo_path = status.repo_path
-            if repo_path not in fresh_pr_statuses:
-                prev = self._pr_statuses.get(repo_path)
-                if prev is not None:
-                    merged[repo_path] = prev
-                continue
-
-            fresh = fresh_pr_statuses[repo_path]
-            prev = self._pr_statuses.get(repo_path)
-
-            # Route A: branch disappeared from gh's lookup entirely.
-            if (
-                fresh.kind == PrStatusKind.NO_PR
-                and prev is not None
-                and prev.kind == PrStatusKind.OPEN
-                and prev.number is not None
-            ):
-                probed_kind = pr_status.final_state(repo_path, prev.number)
-                if probed_kind in (PrStatusKind.MERGED, PrStatusKind.CLOSED):
-                    merged[repo_path] = PrStatus(kind=probed_kind, number=prev.number)
-                    continue
-
-            # Route B: branch still exists; gh keeps reporting the same
-            # terminal PR. Collapse to NO_PR after the first confirmation.
-            if fresh.kind in (PrStatusKind.MERGED, PrStatusKind.CLOSED):
-                if prev is not None and prev.kind == fresh.kind and prev.number == fresh.number:
-                    merged[repo_path] = PrStatus(
-                        kind=PrStatusKind.NO_PR,
-                        current_branch=git_ops.current_branch(repo_path),
-                    )
-                else:
-                    merged[repo_path] = fresh
-                continue
-
-            merged[repo_path] = fresh
-        return merged
-
     def check_all(self, _sender) -> None:
         if self._checking:
             return
@@ -843,38 +743,20 @@ class BaseBranchWatchApp(rumps.App):
             log.rotate_if_needed()
             log.append(f"---- {datetime.datetime.now()} ----")
 
-            now = time.monotonic()
-            pr_eligible = {
-                repo.repo_path
-                for repo in self.cfg.repos
-                # WR-03: float("-inf") sentinel, not 0.0 -- time.monotonic()'s
-                # reference point is unspecified (effectively system uptime on
-                # macOS/CPython), so a machine rebooted <2min before launch
-                # would otherwise have every repo incorrectly excluded from
-                # this very first cycle's eligible set.
-                if (now - self._last_pr_checked_at.get(repo.repo_path, float("-inf")))
-                >= PR_CHECK_FLOOR_SECONDS
-            }
+            result = self._cycle.run(self.cfg.repos, self._state, time.monotonic())
+            for line in result.log_lines:
+                log.append(line)
+            self.statuses = {status.repo_path: status for status in result.statuses}
 
-            statuses, fresh_pr_statuses = batch.check_all(self.cfg.repos, pr_repo_paths=pr_eligible)
-            for status in statuses:
-                log.append(self._log_status_line(status))
+            if result.digest_statuses:
+                self._notifier.send_digest(result.digest_statuses)
+            self._persist_state(result.state)
 
-            self.statuses = {status.repo_path: status for status in statuses}
-            for repo_path in pr_eligible:
-                self._last_pr_checked_at[repo_path] = now
-            self._pr_statuses = self._merge_pr_statuses(statuses, fresh_pr_statuses)
-
-            digest = notify_policy.decide_digest(self._state, statuses)
-            if digest.statuses:
-                self._notifier.send_digest(digest.statuses)
-            self._persist_state(digest.state)
-
-            self._render(statuses)
-            # PR row is a second, independent row per repo (D-08) — rendered
+            self._render(result.statuses)
+            # PR row is a second, independent row per repo (D-08) - rendered
             # after the git row so its insert_after anchor already exists.
-            for status in statuses:
-                pr_status_for_repo = self._pr_statuses.get(status.repo_path)
+            for status in result.statuses:
+                pr_status_for_repo = result.pr_statuses.get(status.repo_path)
                 if pr_status_for_repo is not None:
                     pr_spec = menu_builder._pr_row(pr_status_for_repo, status.name)
                     self._render_pr_row(status.repo_path, pr_spec)
