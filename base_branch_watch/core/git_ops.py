@@ -96,21 +96,33 @@ class FetchResult:
 
 
 def _run_git(
-    repo_path: str, args: list[str], timeout: int
-) -> subprocess.CompletedProcess[str]:
+    repo_path: str, args: list[str], timeout: int, *, text: bool = True
+) -> subprocess.CompletedProcess:
+    """The one subprocess template. Raises on timeout/OSError; fetch() needs
+    that distinction for its error text, everything else uses _try_git."""
     return subprocess.run(
         [GIT, "-C", repo_path, *args],
         capture_output=True,
-        text=True,
+        text=text,
         timeout=timeout,
     )
 
 
+def _try_git(
+    repo_path: str, args: list[str], timeout: int, *, text: bool = True
+) -> subprocess.CompletedProcess | None:
+    """_run_git that never raises: None means "git could not run or timed out"
+    (the module-wide "couldn't determine" case), distinct from a nonzero exit."""
+    try:
+        return _run_git(repo_path, args, timeout, text=text)
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+
+
 def detect_default_branch(repo_path: str, timeout: int = 10) -> str | None:
     """Resolve origin's default branch via `ls-remote --symref origin HEAD`."""
-    try:
-        result = _run_git(repo_path, ["ls-remote", "--symref", "origin", "HEAD"], timeout)
-    except (subprocess.TimeoutExpired, OSError):
+    result = _try_git(repo_path, ["ls-remote", "--symref", "origin", "HEAD"], timeout)
+    if result is None:
         return None
     if result.returncode != 0:
         return None
@@ -161,9 +173,8 @@ def resolve_ref(repo_path: str, ref: str, timeout: int = 10) -> str | None:
     """`git rev-parse <ref>` — resolve any ref (branch, remote-tracking, etc.)
     to its current commit SHA. Never raises; returns None on failure/timeout.
     """
-    try:
-        result = _run_git(repo_path, ["rev-parse", ref], timeout)
-    except (subprocess.TimeoutExpired, OSError):
+    result = _try_git(repo_path, ["rev-parse", ref], timeout)
+    if result is None:
         return None
     if result.returncode != 0:
         return None
@@ -173,9 +184,8 @@ def resolve_ref(repo_path: str, ref: str, timeout: int = 10) -> str | None:
 
 def current_branch(repo_path: str, timeout: int = 10) -> str | None:
     """`git rev-parse --abbrev-ref HEAD`."""
-    try:
-        result = _run_git(repo_path, ["rev-parse", "--abbrev-ref", "HEAD"], timeout)
-    except (subprocess.TimeoutExpired, OSError):
+    result = _try_git(repo_path, ["rev-parse", "--abbrev-ref", "HEAD"], timeout)
+    if result is None:
         return None
     if result.returncode != 0:
         return None
@@ -195,13 +205,12 @@ def behind_ahead(
     divergence" apart from "couldn't determine" (WR-04). A nonzero git exit
     (e.g. an unresolvable ref) still collapses to (0, 0), unchanged.
     """
-    try:
-        result = _run_git(
-            repo_path,
-            ["rev-list", "--left-right", "--count", f"{left_ref}...{right_ref}"],
-            timeout,
-        )
-    except (subprocess.TimeoutExpired, OSError):
+    result = _try_git(
+        repo_path,
+        ["rev-list", "--left-right", "--count", f"{left_ref}...{right_ref}"],
+        timeout,
+    )
+    if result is None:
         return (-1, -1)
     if result.returncode != 0:
         return (0, 0)
@@ -220,9 +229,8 @@ def merge_base(repo_path: str, left: str, right: str, timeout: int = 10) -> str 
     (no common ancestor, e.g. rewritten/unrelated history) both collapse to
     None; only exit 0 with a SHA on stdout counts as success.
     """
-    try:
-        result = _run_git(repo_path, ["merge-base", left, right], timeout)
-    except (subprocess.TimeoutExpired, OSError):
+    result = _try_git(repo_path, ["merge-base", left, right], timeout)
+    if result is None:
         return None
     if result.returncode != 0:
         return None
@@ -237,9 +245,8 @@ def merge_tree_dry_run(
 
     Authoritative, non-mutating conflict check (git >= 2.38) -- writes an
     unreferenced loose object into .git/objects and does NOT touch the
-    working tree, index, or HEAD (03-RESEARCH.md Pitfall 6). Uses
-    subprocess.run directly (not _run_git, which forces text=True) so the
-    NUL-separated stdout can be split exactly as bytes.
+    working tree, index, or HEAD (03-RESEARCH.md Pitfall 6). Runs with
+    text=False so the NUL-separated stdout can be split exactly as bytes.
 
     branch1/branch2 sit after a mandatory "--" separator: they are
     config-controlled base-branch names flowing into a git argument list,
@@ -258,24 +265,13 @@ def merge_tree_dry_run(
     sentinel used everywhere else in this file -- never confuse either with
     a real conflict or a clean result.
     """
-    try:
-        result = subprocess.run(
-            [
-                GIT,
-                "-C",
-                repo_path,
-                "merge-tree",
-                "--write-tree",
-                "--name-only",
-                "-z",
-                "--",
-                branch1,
-                branch2,
-            ],
-            capture_output=True,
-            timeout=timeout,
-        )
-    except (subprocess.TimeoutExpired, OSError):
+    result = _try_git(
+        repo_path,
+        ["merge-tree", "--write-tree", "--name-only", "-z", "--", branch1, branch2],
+        timeout,
+        text=False,
+    )
+    if result is None:
         return None
     if result.returncode == 0:
         return (False, [])
@@ -299,9 +295,8 @@ def hooks_path(repo_path: str, timeout: int = 10) -> str | None:
     override value yields an absolute result directly. Always join a
     relative result onto repo_path.
     """
-    try:
-        result = _run_git(repo_path, ["rev-parse", "--git-path", "hooks"], timeout)
-    except (subprocess.TimeoutExpired, OSError):
+    result = _try_git(repo_path, ["rev-parse", "--git-path", "hooks"], timeout)
+    if result is None:
         return None
     if result.returncode != 0:
         return None
@@ -315,9 +310,8 @@ def hooks_path(repo_path: str, timeout: int = 10) -> str | None:
 
 def repo_toplevel(repo_path: str = ".", timeout: int = 10) -> str | None:
     """`git rev-parse --show-toplevel`. Never raises; None on failure."""
-    try:
-        result = _run_git(repo_path, ["rev-parse", "--show-toplevel"], timeout)
-    except (subprocess.TimeoutExpired, OSError):
+    result = _try_git(repo_path, ["rev-parse", "--show-toplevel"], timeout)
+    if result is None:
         return None
     if result.returncode != 0:
         return None
@@ -387,17 +381,15 @@ def working_tree_paths(repo_path: str, timeout: int = 10) -> set[str] | None:
     empty set for that half, not None — mirrors behind_ahead's distinction
     between "couldn't determine" and "confirmed empty."
     """
-    try:
-        diff_result = _run_git(repo_path, ["diff", "--name-status", "-z", "HEAD"], timeout)
-    except (subprocess.TimeoutExpired, OSError):
+    diff_result = _try_git(repo_path, ["diff", "--name-status", "-z", "HEAD"], timeout)
+    if diff_result is None:
         return None
     changed = _parse_name_status_z(diff_result.stdout) if diff_result.returncode == 0 else set()
 
-    try:
-        untracked_result = _run_git(
-            repo_path, ["ls-files", "--others", "--exclude-standard", "-z"], timeout
-        )
-    except (subprocess.TimeoutExpired, OSError):
+    untracked_result = _try_git(
+        repo_path, ["ls-files", "--others", "--exclude-standard", "-z"], timeout
+    )
+    if untracked_result is None:
         return None
     if untracked_result.returncode != 0:
         untracked: set[str] = set()
@@ -417,9 +409,8 @@ def branch_unique_paths(
     is not necessarily the ref being pushed (multi-ref pushes, pushing a
     non-checked-out local branch). None on subprocess failure or nonzero
     returncode."""
-    try:
-        result = _run_git(repo_path, ["diff", "--name-status", "-z", mb, right_ref], timeout)
-    except (subprocess.TimeoutExpired, OSError):
+    result = _try_git(repo_path, ["diff", "--name-status", "-z", mb, right_ref], timeout)
+    if result is None:
         return None
     if result.returncode != 0:
         return None
@@ -433,62 +424,58 @@ def incoming_changed_paths(
     incoming window. Uses `--name-status -z` in place of D-03's literal
     `--name-only` (02-RESEARCH.md Pattern 2): same ref range, same intent,
     rename/unicode-correct. Never a merge command (D-05). None on failure."""
-    try:
-        result = _run_git(
-            repo_path, ["diff", "--name-status", "-z", mb, f"origin/{base}"], timeout
-        )
-    except (subprocess.TimeoutExpired, OSError):
+    result = _try_git(repo_path, ["diff", "--name-status", "-z", mb, f"origin/{base}"], timeout)
+    if result is None:
         return None
     if result.returncode != 0:
         return None
     return _parse_name_status_z(result.stdout)
 
 
-def _commit_changed_paths(repo_path: str, sha: str, timeout: int) -> set[str]:
-    """Paths touched by a SINGLE commit -- `git diff-tree --no-commit-id
-    --name-only -r -z <sha>` (03-RESEARCH.md Code Examples). Distinct from
-    `incoming_changed_paths`'s flat range diff: D-06's per-commit overlap
-    flag needs to know which INDIVIDUAL commit touches an overlapping path,
-    not just whether the whole range does. Never raises; [] on failure."""
-    try:
-        result = _run_git(
-            repo_path, ["diff-tree", "--no-commit-id", "--name-only", "-r", "-z", sha], timeout
-        )
-    except (subprocess.TimeoutExpired, OSError):
-        return set()
-    if result.returncode != 0:
-        return set()
-    return {p for p in result.stdout.split("\0") if p}
+# incoming_commits' `git log` record layout: the format string and the parser
+# share these so they cannot drift apart.
+_RECORD_SEP = "\x1e"
+_FIELD_SEP = "\x1f"
 
 
 def incoming_commits(
     repo_path: str, mb: str, base_ref: str, timeout: int = 15
 ) -> list[IncomingCommit]:
-    """D-05's per-base commit list: `git log --no-merges --format=... mb..base_ref`,
-    newest-first, each with its own `_commit_changed_paths` set for D-06's
-    overlap flag. `mb` is always a merge-base SHA (never dash-prefixed) and
-    `base_ref` is always caller-constructed as `origin/<base>` (never
-    dash-prefixed either) -- the `mb..base_ref` range positional can never be
-    mistaken for a flag, mirroring `merge_base`'s existing bare-positional
-    precedent in this same file. Never raises; [] on any failure.
+    """D-05's per-base commit list: `git log --no-merges mb..base_ref`,
+    newest-first, each with its own changed-path set for D-06's per-commit
+    overlap flag. One git call for the whole range (header + `--name-only -z`
+    paths per commit); `--no-renames` keeps both sides of a rename. `mb` is always a merge-base SHA
+    (never dash-prefixed) and `base_ref` is always caller-constructed as
+    `origin/<base>` (never dash-prefixed either) -- the `mb..base_ref` range
+    positional can never be mistaken for a flag, mirroring `merge_base`'s
+    existing bare-positional precedent in this same file. Never raises; [] on
+    any failure.
+
+    Record layout: \x1e <hash> \x1f <author> \x1f <subject> \0 \n <path> \0 <path> \0 ...
     """
-    try:
-        result = _run_git(
-            repo_path,
-            ["log", "--no-merges", "--format=%h\x1f%an\x1f%s", f"{mb}..{base_ref}"],
-            timeout,
-        )
-    except (subprocess.TimeoutExpired, OSError):
-        return []
-    if result.returncode != 0:
+    result = _try_git(
+        repo_path,
+        [
+            "log",
+            "--no-merges",
+            "--no-renames",
+            "--name-only",
+            "-z",
+            "--format=%x1e%h%x1f%an%x1f%s",
+            f"{mb}..{base_ref}",
+        ],
+        timeout,
+    )
+    if result is None or result.returncode != 0:
         return []
     commits: list[IncomingCommit] = []
-    for line in result.stdout.splitlines():
-        parts = line.split("\x1f", 2)
+    for record in result.stdout.split(_RECORD_SEP):
+        header, _, path_block = record.partition("\0")
+        parts = header.split(_FIELD_SEP, 2)
         if len(parts) != 3:
             continue
         short_hash, author, subject = parts
-        changed_paths = _commit_changed_paths(repo_path, short_hash, timeout)
+        changed_paths = {p for p in path_block.removeprefix("\n").split("\0") if p}
         commits.append(
             IncomingCommit(
                 short_hash=short_hash,
@@ -504,11 +491,12 @@ def unpushed_count(repo_path: str, timeout: int = 10) -> int:
     """Count of commits on HEAD not yet on its own upstream (`@{u}`).
 
     `rev-list --count @{u}..HEAD`. Returns 0 when `@{u}` can't be resolved
-    (no upstream configured for the current branch) - never raises.
+    (no upstream configured for the current branch) and also when git itself
+    fails or times out - callers cannot tell the two apart and do not need to:
+    both mean "nothing to report as unpushed". Never raises.
     """
-    try:
-        result = _run_git(repo_path, ["rev-list", "--count", "@{u}..HEAD"], timeout)
-    except (subprocess.TimeoutExpired, OSError):
+    result = _try_git(repo_path, ["rev-list", "--count", "@{u}..HEAD"], timeout)
+    if result is None:
         return 0
     if result.returncode != 0:
         return 0

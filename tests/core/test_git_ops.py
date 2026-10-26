@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
 from base_branch_watch.core import base_verdict, git_ops, log
 from base_branch_watch.core.models import RepoConfig, Severity, StatusKind
+from tests.conftest import _run
 
 
 def test_check_repo_behind_reports_behind_count_and_kind(fixture_repos, default_branch_name):
@@ -619,3 +621,79 @@ def test_check_repo_records_origin_base_head_sha_for_checked_bases(
     expected = git_ops.resolve_ref(clone_path, f"origin/{default_branch_name}")
     assert expected is not None
     assert status.branch_statuses[0].head_sha == expected
+
+
+# -- subprocess seam: one runner, one failure convention ----------------------
+
+
+def test_try_git_returns_the_completed_process_on_success(fixture_repos):
+    _origin, clone_path = fixture_repos
+
+    result = git_ops._try_git(clone_path, ["rev-parse", "HEAD"], 10)
+
+    assert result is not None
+    assert result.returncode == 0
+
+
+@pytest.mark.parametrize(
+    "error", [subprocess.TimeoutExpired(cmd="git", timeout=1), OSError("no git")]
+)
+def test_try_git_collapses_timeout_and_oserror_to_none(error):
+    with patch("base_branch_watch.core.git_ops._run_git", side_effect=error):
+        assert git_ops._try_git("/anywhere", ["status"], 1) is None
+
+
+@pytest.mark.parametrize(
+    "error", [subprocess.TimeoutExpired(cmd="git", timeout=1), OSError("no git")]
+)
+def test_merge_tree_dry_run_goes_through_the_shared_runner(
+    error, fixture_repos_up_to_date, default_branch_name
+):
+    """Used to call subprocess.run directly; a runner failure must read as
+    'undeterminable' (None), same as every sibling wrapper - even on a repo
+    where the real dry run would have answered 'clean'."""
+    _origin, clone_path = fixture_repos_up_to_date
+    origin_ref = f"origin/{default_branch_name}"
+    assert git_ops.merge_tree_dry_run(clone_path, "HEAD", origin_ref) == (False, [])
+
+    with patch("base_branch_watch.core.git_ops._run_git", side_effect=error):
+        assert git_ops.merge_tree_dry_run(clone_path, "HEAD", origin_ref) is None
+
+
+def _origin_commit(origin_dir: str, name: str, content: str, message: str) -> None:
+    (Path(origin_dir) / name).write_text(content)
+    _run(["add", name], Path(origin_dir))
+    _run(["commit", "-m", message], Path(origin_dir))
+
+
+def test_incoming_commits_reads_every_commit_and_its_paths_in_one_git_call(
+    fixture_repos_up_to_date, default_branch_name
+):
+    origin_dir, clone_path = fixture_repos_up_to_date
+    _origin_commit(origin_dir, "a.txt", "a\n", "add a")
+    _origin_commit(origin_dir, "b.txt", "b\n", "add b with | odd, subject")
+    _run(["commit", "--allow-empty", "-m", "empty one"], Path(origin_dir))
+    git_ops.fetch(clone_path, default_branch_name)
+    mb = git_ops.merge_base(clone_path, "HEAD", f"origin/{default_branch_name}")
+    assert mb is not None
+
+    with patch.object(git_ops, "_run_git", wraps=git_ops._run_git) as spy:
+        commits = git_ops.incoming_commits(clone_path, mb, f"origin/{default_branch_name}")
+
+    assert spy.call_count == 1  # whole range in a single git call
+    assert [c.subject for c in commits] == ["empty one", "add b with | odd, subject", "add a"]
+    assert [c.changed_paths for c in commits] == [set(), {"b.txt"}, {"a.txt"}]
+    assert all(c.author for c in commits)
+
+
+def test_incoming_commits_lists_both_paths_of_a_rename(
+    fixture_repos_incoming_rename, default_branch_name
+):
+    _origin, clone_path = fixture_repos_incoming_rename
+    git_ops.fetch(clone_path, default_branch_name)
+    mb = git_ops.merge_base(clone_path, "HEAD", f"origin/{default_branch_name}")
+    assert mb is not None
+
+    commits = git_ops.incoming_commits(clone_path, mb, f"origin/{default_branch_name}")
+
+    assert [c.changed_paths for c in commits] == [{"file.txt", "renamed.txt"}]
