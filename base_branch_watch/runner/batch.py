@@ -3,7 +3,7 @@
 No rumps/AppKit import here, ever — stays pure and reusable by any future
 non-app porcelain (ARCHITECTURE.md's plumbing/porcelain split, Suggested
 Build Order step 3). Retry-once-on-fetch-failure already lives in
-core.git_ops.check_repo (Plan 03); this module only orchestrates parallelism
+core.base_verdict.check_repo; this module only orchestrates parallelism
 and per-repo failure isolation, it does not retry anything itself.
 
 D-12 (04-pr-status Plan 01): PR status is fetched via core.pr_status.check_pr
@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from base_branch_watch.core import git_ops, pr_status
+from base_branch_watch.core import base_verdict, pr_status
 from base_branch_watch.core.models import PrStatus, RepoConfig, RepoStatus
 
 
@@ -31,7 +31,7 @@ def _check_one(
     # computed result on the OTHER axis (D-08: PR status is purely
     # informational and must never degrade git-status severity).
     try:
-        status = git_ops.check_repo(repo)
+        status = base_verdict.check_repo(repo)
     except Exception as exc:  # noqa: BLE001 - isolate git-side failure from PR status
         status = RepoStatus.failed(repo, str(exc))
 
