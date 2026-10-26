@@ -14,7 +14,7 @@ It watches your repos in the background, shows live status in the menu bar, warn
 - **Watches any number of repos**, each with one or more base branches (e.g. `main`, or a team integration branch like `perps-funding-rate-dev`)
 - **Menu bar shows live status per repo**: up to date / behind / unpushed / diverged / ⚠️ conflict risk
 - **Multi-base repos** expand into a real submenu, one row per base branch
-- **Conflict-risk warning**: if the base branch's incoming changes touch a file you've *also* changed locally, the badge escalates to "⚠️ conflict risk" instead of a plain "behind" count - you see this *before* you ever try to push
+- **Conflict-risk warning**: if merging the base branch's incoming changes into yours would really conflict (checked with a safe `git merge-tree` dry run), or the incoming changes touch a file you have uncommitted edits to, the badge escalates to "⚠️ conflict risk" instead of a plain "behind" count - you see this *before* you ever try to push
 - **Pre-push gate**: every `git push` in a watched repo is preceded by a summary of what's new on the base branch. If a real conflict is detected (via a safe dry-run, nothing is touched), you get an interactive "Push anyway?" prompt - default is to stop, but it's your call
 - **PR status in the menu**: once you've opened a PR, see its checks/review/mergeable state as a second row per repo, sourced via the `gh` CLI (reuses your existing `gh auth login` - no new login, no new token)
 - **One consolidated notification** per polling cycle (not spammy per-repo popups), deduped so you're not renotified for the same change
@@ -76,9 +76,9 @@ Click the menu bar icon to see watched repos and their status.
 | 🟡 N behind | The base branch moved ahead by N commits - safe to pull, no overlap with your changes |
 | 🟠 N unpushed | You've committed locally but haven't pushed yet |
 | 🔴 diverged | You're both behind *and* ahead - a real merge/rebase is needed |
-| ⚠️ conflict risk | The base branch's incoming changes touch a file you've also changed - pulling *will* need manual conflict resolution |
+| ⚠️ conflict risk | Merging the base branch would conflict (or its incoming changes touch a file you have uncommitted edits to) - pulling *will* need manual conflict resolution |
 
-> **What counts as "a file you've also changed"?** Not just uncommitted edits in your working tree - it's the union of *(a)* your working-tree changes (staged, unstaged, untracked) **and** *(b)* every commit already sitting on your branch since it diverged from the base. So a conflict-risk warning can fire even when you haven't touched anything today, if an old commit on your branch happens to touch the same file as a new incoming commit on the base. This is also recomputed fresh from live git state on *every* poll cycle - nothing is cached or persisted between checks - so the file list can appear or disappear from one refresh (or app restart) to the next as the base branch moves, your branch catches up, or the specific incoming commit that caused the overlap gets superseded. That's expected behavior, not a bug.
+> **What counts as a conflict risk?** Committed work is judged by `git merge-tree`, the same dry run the pre-push gate uses, so the menu and the gate agree: two branches editing the same file in different places merge cleanly and do not flag. Uncommitted edits (staged, unstaged, untracked) cannot be merge-tested, so for those the rule is simpler: an incoming change to a file you have uncommitted edits to flags. If `git merge-tree` cannot run, it falls back to "incoming and local changes touch the same file". Everything is recomputed fresh from live git state on *every* poll cycle - nothing is cached or persisted between checks - so a warning can appear or disappear from one refresh to the next as the base branch moves or your branch catches up. That's expected behavior, not a bug.
 | 🔀 PR #N - ✅/❌/⏳ ... | Your current branch's open PR: checks · review · mergeable state (click to expand) |
 | ⚪ no open PR | Current branch has no PR yet |
 | ✅ PR #N merged / ⚫ closed | One-cycle confirmation that your PR landed (or was closed without merging) |
