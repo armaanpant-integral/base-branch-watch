@@ -23,6 +23,7 @@ from base_branch_watch.core.models import (
     RepoStatus,
     StatusKind,
 )
+from base_branch_watch.runner import poll_cycle
 
 
 def _configure(app, status: RepoStatus) -> None:
@@ -501,11 +502,12 @@ def test_check_all_pr_floor_skips_second_call_within_2min_but_retains_row(app):
     app.cfg.repos = [RepoConfig(repo_path=status.repo_path, base_branches=["main"])]
     pr_result = PrStatus(kind=PrStatusKind.NO_PR, current_branch="main")
 
-    with patch(
-        "base_branch_watch.runner.batch.base_verdict.check_repo", return_value=status
-    ), patch(
-        "base_branch_watch.runner.batch.pr_status.check_pr", return_value=pr_result
-    ) as mock_check_pr:
+    with (
+        patch("base_branch_watch.runner.batch.base_verdict.check_repo", return_value=status),
+        patch(
+            "base_branch_watch.runner.batch.pr_status.check_pr", return_value=pr_result
+        ) as mock_check_pr,
+    ):
         app.check_all(None)
         app.check_all(None)
 
@@ -532,39 +534,43 @@ def test_check_all_open_to_no_pr_transition_renders_merged_for_one_cycle_then_fa
     )
     no_pr_status = PrStatus(kind=PrStatusKind.NO_PR, current_branch="main")
 
-    with patch(
-        "base_branch_watch.app.menubar.batch.check_all",
+    with patch.object(
+        app._cycle,
+        "_check_all",
         return_value=([status], {status.repo_path: open_status}),
     ):
         app.check_all(None)
-    assert app._pr_statuses[status.repo_path].kind == PrStatusKind.OPEN
+    assert app._cycle.pr_statuses[status.repo_path].kind == PrStatusKind.OPEN
 
     # Force PR-check eligibility for the next cycle (bypass the 2min floor
     # in this fast-running test -- the floor itself is covered by the
     # dedicated floor test above).
-    app._last_pr_checked_at[status.repo_path] = 0.0
+    app._cycle.last_pr_checked_at[status.repo_path] = 0.0
 
-    with patch(
-        "base_branch_watch.app.menubar.batch.check_all",
-        return_value=([status], {status.repo_path: no_pr_status}),
-    ), patch(
-        "base_branch_watch.app.menubar.pr_status.final_state", return_value=PrStatusKind.MERGED
+    with (
+        patch.object(
+            app._cycle,
+            "_check_all",
+            return_value=([status], {status.repo_path: no_pr_status}),
+        ),
+        patch.object(app._cycle, "_final_state", return_value=PrStatusKind.MERGED),
     ):
         app.check_all(None)
 
-    assert app._pr_statuses[status.repo_path].kind == PrStatusKind.MERGED
-    assert app._pr_statuses[status.repo_path].number == 7
+    assert app._cycle.pr_statuses[status.repo_path].kind == PrStatusKind.MERGED
+    assert app._cycle.pr_statuses[status.repo_path].number == 7
     assert app._pr_items[status.repo_path].title == "✅ myrepo: PR #7 merged"
 
-    app._last_pr_checked_at[status.repo_path] = 0.0
+    app._cycle.last_pr_checked_at[status.repo_path] = 0.0
 
-    with patch(
-        "base_branch_watch.app.menubar.batch.check_all",
+    with patch.object(
+        app._cycle,
+        "_check_all",
         return_value=([status], {status.repo_path: no_pr_status}),
     ):
         app.check_all(None)
 
-    assert app._pr_statuses[status.repo_path].kind == PrStatusKind.NO_PR
+    assert app._cycle.pr_statuses[status.repo_path].kind == PrStatusKind.NO_PR
     assert app._pr_items[status.repo_path].title == "⚪ myrepo: no open PR (main)"
 
 
@@ -584,27 +590,33 @@ def test_check_all_merged_pr_still_found_by_gh_renders_once_then_collapses_to_no
 
     merged_status = PrStatus(kind=PrStatusKind.MERGED, number=7)
 
-    with patch(
-        "base_branch_watch.app.menubar.batch.check_all",
+    with patch.object(
+        app._cycle,
+        "_check_all",
         return_value=([status], {status.repo_path: merged_status}),
     ):
         app.check_all(None)
 
-    assert app._pr_statuses[status.repo_path].kind == PrStatusKind.MERGED
+    assert app._cycle.pr_statuses[status.repo_path].kind == PrStatusKind.MERGED
     assert app._pr_items[status.repo_path].title == "✅ myrepo: PR #7 merged"
 
-    app._last_pr_checked_at[status.repo_path] = 0.0
-    with patch(
-        "base_branch_watch.app.menubar.batch.check_all",
-        # gh STILL reports the same merged PR directly -- branch never
-        # disappeared, so batch.check_all never returns NO_PR here.
-        return_value=([status], {status.repo_path: PrStatus(kind=PrStatusKind.MERGED, number=7)}),
-    ), patch(
-        "base_branch_watch.app.menubar.git_ops.current_branch", return_value="main"
+    app._cycle.last_pr_checked_at[status.repo_path] = 0.0
+    with (
+        patch.object(
+            app._cycle,
+            "_check_all",
+            # gh STILL reports the same merged PR directly -- branch never
+            # disappeared, so batch.check_all never returns NO_PR here.
+            return_value=(
+                [status],
+                {status.repo_path: PrStatus(kind=PrStatusKind.MERGED, number=7)},
+            ),
+        ),
+        patch.object(app._cycle, "_current_branch", return_value="main"),
     ):
         app.check_all(None)
 
-    assert app._pr_statuses[status.repo_path].kind == PrStatusKind.NO_PR
+    assert app._cycle.pr_statuses[status.repo_path].kind == PrStatusKind.NO_PR
     assert app._pr_items[status.repo_path].title == "⚪ myrepo: no open PR (main)"
 
 
@@ -621,25 +633,26 @@ def test_check_all_renders_pr_row_from_fake_batch_result_without_raising(app, mo
     app.cfg.repos = [RepoConfig(repo_path=status.repo_path, base_branches=["main"])]
     pr_status = PrStatus(kind=PrStatusKind.NO_PR, current_branch="main")
 
-    with patch(
-        "base_branch_watch.app.menubar.batch.check_all",
+    with patch.object(
+        app._cycle,
+        "_check_all",
         return_value=([status], {status.repo_path: pr_status}),
     ):
         app.check_all(None)
 
     assert status.repo_path in app._pr_items
     assert app._pr_items[status.repo_path].title == "⚪ myrepo: no open PR (main)"
-    assert app._pr_statuses[status.repo_path] is pr_status
+    assert app._cycle.pr_statuses[status.repo_path] is pr_status
 
 
-def test_log_status_line_check_failed_base_is_labelled_fail(app):
-    line = app._log_status_line(_check_failed_single_base_status(name="repo-h"))
+def test_log_status_line_check_failed_base_is_labelled_fail():
+    line = poll_cycle.status_log_line(_check_failed_single_base_status(name="repo-h"))
 
     assert line.startswith("[FAIL] repo-h: ")
     assert "(main)" in line
 
 
-def test_log_status_line_non_failed_bases_stay_ok(app):
+def test_log_status_line_non_failed_bases_stay_ok():
     up_to_date = _status(
         "repo-u",
         branch_statuses=[
@@ -647,8 +660,8 @@ def test_log_status_line_non_failed_bases_stay_ok(app):
         ],
     )
 
-    assert app._log_status_line(up_to_date) == "[OK] repo-u: up to date"
-    assert app._log_status_line(_diverged_status("repo-d")).startswith("[OK] repo-d: ")
+    assert poll_cycle.status_log_line(up_to_date) == "[OK] repo-u: up to date"
+    assert poll_cycle.status_log_line(_diverged_status("repo-d")).startswith("[OK] repo-d: ")
 
 
 # -- self-update check ------------------------------------------------------
@@ -780,7 +793,7 @@ def gating_app(app, monkeypatch):
     app.cfg.repos = [RepoConfig(repo_path="/tmp/myrepo", base_branches=["main"])]
     monkeypatch.setattr(menubar.state, "save_state", lambda s: saves.append(s))
     monkeypatch.setattr(
-        menubar.batch, "check_all", lambda repos, pr_repo_paths=None: (app.next_statuses, {})
+        app._cycle, "_check_all", lambda repos, pr_repo_paths=None: (app.next_statuses, {})
     )
     return app
 
@@ -806,9 +819,7 @@ def test_check_all_persists_cleared_unpushed_count_even_when_nothing_notifies(ga
 
     assert gating_app._notifier.send_digest.call_count == 1
     assert len(gating_app.saves) == saves_after_first + 1
-    assert menubar.notify_policy.UNPUSHED_KEY not in gating_app._state.get(
-        "/tmp/myrepo", {}
-    )
+    assert menubar.notify_policy.UNPUSHED_KEY not in gating_app._state.get("/tmp/myrepo", {})
 
 
 def test_check_all_failed_digest_send_does_not_mark_state_notified(gating_app):
