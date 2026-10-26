@@ -323,7 +323,7 @@ def fixture_repos_no_common_ancestor(tmp_path, default_branch_name):
     `git checkout --orphan` + `git branch -M`, sharing no common ancestor
     with the clone's HEAD, while `behind_ahead` still reports the clone as
     behind -- regression fixture for 02-RESEARCH.md Pitfall 3/5: `merge_base`
-    must return None here (exit 1, no common ancestor) so `check_repo` routes
+    must return None here (exit 1, no common ancestor) so `base_verdict.check_repo` routes
     to CHECK_FAILED, never a silent no-conflict / bogus BEHIND result.
     """
     origin_dir = tmp_path / "origin"

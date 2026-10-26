@@ -136,14 +136,14 @@ def test_check_all_isolates_per_repo_pr_status_exception_as_check_failed():
     assert by_path["/tmp/good"].worst_kind != StatusKind.CHECK_FAILED
     assert pr_statuses["/tmp/good"].kind == PrStatusKind.NO_PR
     # /tmp/bad-pr's gh-side exception fails ONLY its PrStatus -- its
-    # RepoStatus (git axis) is untouched since git_ops.check_repo succeeded.
+    # RepoStatus (git axis) is untouched since base_verdict.check_repo succeeded.
     assert by_path["/tmp/bad-pr"].worst_kind != StatusKind.CHECK_FAILED
     assert pr_statuses["/tmp/bad-pr"].kind == PrStatusKind.CHECK_FAILED
     assert pr_statuses["/tmp/bad-pr"].reason is not None
 
 
 def test_check_all_isolates_git_exception_without_affecting_pr_status():
-    """WR-01 fix, symmetric case: a git_ops.check_repo exception isolates
+    """WR-01 fix, symmetric case: a base_verdict.check_repo exception isolates
     to ONLY that repo's RepoStatus -- its PrStatus is still attempted and
     unaffected by the git-side failure."""
     repos = [

@@ -70,50 +70,86 @@ def assess_base(
     per commit. Never raises.
     """
     fetch_result = git_ops.fetch_with_retry(repo_path, base)
-    if not fetch_result.ok:
+    if not fetch_result.ok and not detailed:
         return BaseVerdict(base=base, fetch_ok=False, fetch_error=fetch_result.error)
+    # A detailed (push-time) assessment of a failed fetch still reads the
+    # stale origin ref so the summary can show what it knows; the verdict stays
+    # fetch_ok=False with merge_conflict=None, so nothing treats it as fresh.
+    fetched = fetch_result.ok
 
     origin_ref = f"origin/{base}"
-    head_sha = git_ops.resolve_ref(repo_path, origin_ref)
+    head_sha = git_ops.resolve_ref(repo_path, origin_ref) if fetched else None
 
     behind, ahead = git_ops.behind_ahead(repo_path, local_ref, origin_ref)
     if behind == -1 and ahead == -1:
-        return BaseVerdict(base=base, fetch_ok=True, head_sha=head_sha, comparison_ok=False)
+        return BaseVerdict(
+            base=base,
+            fetch_ok=fetched,
+            fetch_error=fetch_result.error,
+            head_sha=head_sha,
+            comparison_ok=False,
+        )
 
-    fields: dict = {
-        "base": base,
-        "fetch_ok": True,
-        "head_sha": head_sha,
-        "behind": behind,
-        "ahead": ahead,
-        "merge_conflict": False,
-    }
-
+    merge_conflict: bool | None = False
+    conflict_paths: list[str] = []
     # Only a branch with commits of its own can conflict on committed work.
-    if behind > 0 and ahead > 0:
+    if not fetched:
+        merge_conflict = None  # stale origin ref proves nothing
+    elif behind > 0 and ahead > 0:
         dry_run = git_ops.merge_tree_dry_run(repo_path, local_ref, origin_ref)
         if dry_run is None:
-            fields["merge_conflict"] = None
+            merge_conflict = None
         else:
-            fields["merge_conflict"], fields["conflict_paths"] = dry_run
+            merge_conflict, conflict_paths = dry_run
 
+    working_tree_overlap: list[str] = []
+    path_overlap: list[str] = []
+    paths_determinable = True
+    local_changes: set[str] = set()
+    commits: list[IncomingCommit] = []
     if behind > 0 or detailed:
         mb = git_ops.merge_base(repo_path, local_ref, origin_ref)
         working_tree = git_ops.working_tree_paths(repo_path)
-        branch_unique = git_ops.branch_unique_paths(repo_path, mb, local_ref) if mb else None
         incoming = git_ops.incoming_changed_paths(repo_path, mb, base) if mb else None
+        # Branch-unique paths only matter for the push summary and as the
+        # fallback when merge-tree could not decide.
+        need_branch_unique = detailed or merge_conflict is None
+        branch_unique = (
+            git_ops.branch_unique_paths(repo_path, mb, local_ref)
+            if mb and need_branch_unique
+            else None
+        )
 
-        fields["paths_determinable"] = None not in (mb, working_tree, branch_unique, incoming)
+        paths_determinable = (
+            mb is not None
+            and working_tree is not None
+            and incoming is not None
+            and (branch_unique is not None or not need_branch_unique)
+        )
         if incoming is not None and working_tree is not None:
-            fields["working_tree_overlap"] = sorted(incoming & working_tree)
-        if fields["paths_determinable"]:
-            fields["path_overlap"] = sorted(incoming & (working_tree | branch_unique))
+            working_tree_overlap = sorted(incoming & working_tree)
+            if branch_unique is not None:
+                path_overlap = sorted(incoming & (working_tree | branch_unique))
         if detailed:
-            fields["local_changes"] = (working_tree or set()) | (branch_unique or set())
+            local_changes = (working_tree or set()) | (branch_unique or set())
             if mb:
-                fields["incoming_commits"] = git_ops.incoming_commits(repo_path, mb, origin_ref)
+                commits = git_ops.incoming_commits(repo_path, mb, origin_ref)
 
-    return BaseVerdict(**fields)
+    return BaseVerdict(
+        base=base,
+        fetch_ok=fetched,
+        fetch_error=fetch_result.error,
+        head_sha=head_sha,
+        behind=behind,
+        ahead=ahead,
+        merge_conflict=merge_conflict,
+        conflict_paths=conflict_paths,
+        working_tree_overlap=working_tree_overlap,
+        path_overlap=path_overlap,
+        paths_determinable=paths_determinable,
+        local_changes=local_changes,
+        incoming_commits=commits,
+    )
 
 
 def _branch_status(repo_path: str, verdict: BaseVerdict) -> BranchStatus:
@@ -177,26 +213,14 @@ def check_repo(repo: RepoConfig) -> RepoStatus:
     BranchStatus and checking continues for the repo's other bases rather than
     failing the whole repo. Never raises.
     """
-    name = os.path.basename(repo.repo_path.rstrip("/"))
-
-    def failed_repo(reason: str) -> RepoStatus:
-        return RepoStatus(
-            repo_path=repo.repo_path,
-            name=name,
-            current_branch=None,
-            unpushed=0,
-            branch_statuses=[],
-            failure_reason=reason,
-        )
-
     if not os.path.isdir(os.path.join(repo.repo_path, ".git")):
-        return failed_repo(_REASON_REPO_MISSING)
+        return RepoStatus.failed(repo, _REASON_REPO_MISSING)
     if not repo.base_branches:
-        return failed_repo(_REASON_NO_BASES)
+        return RepoStatus.failed(repo, _REASON_NO_BASES)
 
     return RepoStatus(
         repo_path=repo.repo_path,
-        name=name,
+        name=os.path.basename(repo.repo_path.rstrip("/")),
         current_branch=git_ops.current_branch(repo.repo_path),
         unpushed=git_ops.unpushed_count(repo.repo_path),
         branch_statuses=[

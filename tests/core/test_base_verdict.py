@@ -120,3 +120,18 @@ def test_detailed_assessment_adds_incoming_commits_and_local_changes(
 
     assert [c.subject for c in verdict.incoming_commits] == ["origin advances shared.txt"]
     assert verdict.local_changes == {"shared.txt", "file.txt"}
+
+
+def test_detailed_assessment_of_a_failed_fetch_stays_unfetched_and_undecided(
+    fixture_repos_fetch_fails, default_branch_name
+):
+    """The push summary may still read the stale origin ref, but nothing may
+    mistake that for a fresh answer: fetch_ok stays False, no head SHA, and
+    merge_conflict is undeterminable rather than a (stale) clean/conflict."""
+    _origin, clone_path = fixture_repos_fetch_fails
+
+    verdict = _assess(clone_path, default_branch_name, detailed=True)
+
+    assert verdict.fetch_ok is False
+    assert verdict.head_sha is None
+    assert verdict.merge_conflict is None
