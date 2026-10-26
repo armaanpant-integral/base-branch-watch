@@ -502,7 +502,7 @@ def test_check_all_pr_floor_skips_second_call_within_2min_but_retains_row(app):
     pr_result = PrStatus(kind=PrStatusKind.NO_PR, current_branch="main")
 
     with patch(
-        "base_branch_watch.runner.batch.git_ops.check_repo", return_value=status
+        "base_branch_watch.runner.batch.base_verdict.check_repo", return_value=status
     ), patch(
         "base_branch_watch.runner.batch.pr_status.check_pr", return_value=pr_result
     ) as mock_check_pr:

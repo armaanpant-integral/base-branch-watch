@@ -13,9 +13,9 @@ import builtins
 import io
 
 from base_branch_watch import hook
+from base_branch_watch.core import base_verdict, git_ops
 from base_branch_watch.core import config as config_module
-from base_branch_watch.core import git_ops
-from base_branch_watch.core.models import RepoConfig
+from base_branch_watch.core.models import RepoConfig, StatusKind
 
 ZERO_SHA = "0" * 40
 
@@ -138,3 +138,42 @@ def test_hook_gates_when_fetch_fails_even_if_stale_ref_looks_clean(
     assert exit_code != 0
     assert len(prompts) == 1
     assert "Could not determine" in prompts[0]
+
+
+def _hook_gates(clone_path, base, monkeypatch, capsys) -> bool:
+    local_sha = git_ops.resolve_ref(clone_path, "HEAD")
+    monkeypatch.setattr("sys.stdin", io.StringIO(_pre_push_line(base, local_sha)))
+    monkeypatch.chdir(clone_path)
+    _patch_no_tty(monkeypatch)
+    hook.main(["origin", "git@example.com:test.git"])
+    return "No terminal available" in capsys.readouterr().err
+
+
+def test_menu_and_push_gate_agree_on_a_real_conflict(
+    fixture_repos_conflict_overlap, default_branch_name, bbw_config_dir, monkeypatch, capsys
+):
+    _origin, clone_path = fixture_repos_conflict_overlap
+    _configure_repo(clone_path, default_branch_name)
+
+    menu = base_verdict.check_repo(
+        RepoConfig(repo_path=clone_path, base_branches=[default_branch_name])
+    )
+
+    assert menu.branch_statuses[0].kind == StatusKind.CONFLICT_RISK
+    assert _hook_gates(clone_path, default_branch_name, monkeypatch, capsys) is True
+
+
+def test_menu_and_push_gate_agree_when_the_merge_is_clean(
+    fixture_repos_incoming_rename, default_branch_name, bbw_config_dir, monkeypatch, capsys
+):
+    """Path overlap alone (edit vs rename) used to flag the menu while the gate,
+    which asks merge-tree, stayed quiet. Both now answer from the same verdict."""
+    _origin, clone_path = fixture_repos_incoming_rename
+    _configure_repo(clone_path, default_branch_name)
+
+    menu = base_verdict.check_repo(
+        RepoConfig(repo_path=clone_path, base_branches=[default_branch_name])
+    )
+
+    assert menu.branch_statuses[0].kind != StatusKind.CONFLICT_RISK
+    assert _hook_gates(clone_path, default_branch_name, monkeypatch, capsys) is False
