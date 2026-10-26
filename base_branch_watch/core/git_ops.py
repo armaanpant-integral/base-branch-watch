@@ -206,10 +206,10 @@ def behind_ahead(
     (e.g. an unresolvable ref) still collapses to (0, 0), unchanged.
     """
     result = _try_git(
-            repo_path,
-            ["rev-list", "--left-right", "--count", f"{left_ref}...{right_ref}"],
-            timeout,
-        )
+        repo_path,
+        ["rev-list", "--left-right", "--count", f"{left_ref}...{right_ref}"],
+        timeout,
+    )
     if result is None:
         return (-1, -1)
     if result.returncode != 0:
@@ -387,8 +387,8 @@ def working_tree_paths(repo_path: str, timeout: int = 10) -> set[str] | None:
     changed = _parse_name_status_z(diff_result.stdout) if diff_result.returncode == 0 else set()
 
     untracked_result = _try_git(
-            repo_path, ["ls-files", "--others", "--exclude-standard", "-z"], timeout
-        )
+        repo_path, ["ls-files", "--others", "--exclude-standard", "-z"], timeout
+    )
     if untracked_result is None:
         return None
     if untracked_result.returncode != 0:
@@ -424,14 +424,18 @@ def incoming_changed_paths(
     incoming window. Uses `--name-status -z` in place of D-03's literal
     `--name-only` (02-RESEARCH.md Pattern 2): same ref range, same intent,
     rename/unicode-correct. Never a merge command (D-05). None on failure."""
-    result = _try_git(
-            repo_path, ["diff", "--name-status", "-z", mb, f"origin/{base}"], timeout
-        )
+    result = _try_git(repo_path, ["diff", "--name-status", "-z", mb, f"origin/{base}"], timeout)
     if result is None:
         return None
     if result.returncode != 0:
         return None
     return _parse_name_status_z(result.stdout)
+
+
+# incoming_commits' `git log` record layout: the format string and the parser
+# share these so they cannot drift apart.
+_RECORD_SEP = "\x1e"
+_FIELD_SEP = "\x1f"
 
 
 def incoming_commits(
@@ -440,8 +444,7 @@ def incoming_commits(
     """D-05's per-base commit list: `git log --no-merges mb..base_ref`,
     newest-first, each with its own changed-path set for D-06's per-commit
     overlap flag. One git call for the whole range (header + `--name-only -z`
-    paths per commit); `--no-renames` keeps both sides of a rename, as the
-    per-commit diff-tree this replaced did. `mb` is always a merge-base SHA
+    paths per commit); `--no-renames` keeps both sides of a rename. `mb` is always a merge-base SHA
     (never dash-prefixed) and `base_ref` is always caller-constructed as
     `origin/<base>` (never dash-prefixed either) -- the `mb..base_ref` range
     positional can never be mistaken for a flag, mirroring `merge_base`'s
@@ -466,9 +469,9 @@ def incoming_commits(
     if result is None or result.returncode != 0:
         return []
     commits: list[IncomingCommit] = []
-    for record in result.stdout.split("\x1e"):
+    for record in result.stdout.split(_RECORD_SEP):
         header, _, path_block = record.partition("\0")
-        parts = header.split("\x1f", 2)
+        parts = header.split(_FIELD_SEP, 2)
         if len(parts) != 3:
             continue
         short_hash, author, subject = parts

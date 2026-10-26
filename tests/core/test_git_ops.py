@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
 from base_branch_watch.core import base_verdict, git_ops, log
 from base_branch_watch.core.models import RepoConfig, Severity, StatusKind
+from tests.conftest import _run
 
 
 def test_check_repo_behind_reports_behind_count_and_kind(fixture_repos, default_branch_name):
@@ -659,10 +661,6 @@ def test_merge_tree_dry_run_goes_through_the_shared_runner(
 
 
 def _origin_commit(origin_dir: str, name: str, content: str, message: str) -> None:
-    from pathlib import Path
-
-    from tests.conftest import _run
-
     (Path(origin_dir) / name).write_text(content)
     _run(["add", name], Path(origin_dir))
     _run(["commit", "-m", message], Path(origin_dir))
@@ -671,10 +669,6 @@ def _origin_commit(origin_dir: str, name: str, content: str, message: str) -> No
 def test_incoming_commits_reads_every_commit_and_its_paths_in_one_git_call(
     fixture_repos_up_to_date, default_branch_name
 ):
-    from pathlib import Path
-
-    from tests.conftest import _run
-
     origin_dir, clone_path = fixture_repos_up_to_date
     _origin_commit(origin_dir, "a.txt", "a\n", "add a")
     _origin_commit(origin_dir, "b.txt", "b\n", "add b with | odd, subject")
@@ -686,7 +680,7 @@ def test_incoming_commits_reads_every_commit_and_its_paths_in_one_git_call(
     with patch.object(git_ops, "_run_git", wraps=git_ops._run_git) as spy:
         commits = git_ops.incoming_commits(clone_path, mb, f"origin/{default_branch_name}")
 
-    assert spy.call_count == 1  # was 1 + one diff-tree per commit
+    assert spy.call_count == 1  # whole range in a single git call
     assert [c.subject for c in commits] == ["empty one", "add b with | odd, subject", "add a"]
     assert [c.changed_paths for c in commits] == [set(), {"b.txt"}, {"a.txt"}]
     assert all(c.author for c in commits)
