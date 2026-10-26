@@ -755,3 +755,67 @@ def test_clicking_update_row_shows_commits_and_update_steps(update_app, monkeypa
     assert "git pull --ff-only" in captured["message"]
     assert "/fake/checkout" in captured["message"]
     assert "Quit" in captured["message"]
+
+
+# -- notification gating through check_all -----------------------------------
+
+
+def _gating_status(unpushed=0, sha="sha-1", kind=StatusKind.BEHIND):
+    return _status(
+        "myrepo",
+        unpushed=unpushed,
+        branch_statuses=[
+            BranchStatus(base="main", behind=2, ahead_of_base=0, kind=kind, head_sha=sha)
+        ],
+    )
+
+
+@pytest.fixture()
+def gating_app(app, monkeypatch):
+    """App whose polling cycle returns whatever `app.next_statuses` holds."""
+    saves: list = []
+    app._notifier = MagicMock()
+    app.saves = saves
+    app.next_statuses = []
+    app.cfg.repos = [RepoConfig(repo_path="/tmp/myrepo", base_branches=["main"])]
+    monkeypatch.setattr(menubar.state, "save_state", lambda s: saves.append(s))
+    monkeypatch.setattr(
+        menubar.batch, "check_all", lambda repos, pr_repo_paths=None: (app.next_statuses, {})
+    )
+    return app
+
+
+def test_check_all_digest_dedupes_unchanged_sha_across_cycles(gating_app):
+    gating_app.next_statuses = [_gating_status()]
+
+    gating_app.check_all(None)
+    gating_app.check_all(None)
+
+    assert gating_app._notifier.send_digest.call_count == 1
+
+
+def test_check_all_persists_cleared_unpushed_count_even_when_nothing_notifies(gating_app):
+    gating_app.next_statuses = [_gating_status(unpushed=3, kind=StatusKind.UNPUSHED, sha="s")]
+    gating_app.check_all(None)
+    saves_after_first = len(gating_app.saves)
+
+    # Pushed: unpushed drops to 0, repo is OK -> no digest, but the stored count
+    # must still be cleared and saved or the next identical count is swallowed.
+    gating_app.next_statuses = [_gating_status(unpushed=0, kind=StatusKind.UP_TO_DATE, sha="s")]
+    gating_app.check_all(None)
+
+    assert gating_app._notifier.send_digest.call_count == 1
+    assert len(gating_app.saves) == saves_after_first + 1
+    assert menubar.notify_policy.UNPUSHED_KEY not in gating_app._state.get(
+        "/tmp/myrepo", {}
+    )
+
+
+def test_check_all_failed_digest_send_does_not_mark_state_notified(gating_app):
+    gating_app.next_statuses = [_gating_status()]
+    gating_app._notifier.send_digest.side_effect = [RuntimeError("osascript down"), None]
+
+    gating_app.check_all(None)
+    gating_app.check_all(None)
+
+    assert gating_app._notifier.send_digest.call_count == 2

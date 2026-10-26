@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from base_branch_watch.core import self_update, state
+from base_branch_watch.core import self_update
 from tests.conftest import _run
 
 
@@ -76,11 +76,3 @@ def test_checkout_root_found_for_editable_checkout(tmp_path):
     (root / ".git").mkdir()
 
     assert self_update.checkout_root(module_file) == str(root)
-
-
-def test_update_notification_dedupes_on_remote_sha():
-    s: state.State = {}
-    assert state.should_notify_update(s, "sha1") is True
-    s = state.mark_notified_update(s, "sha1")
-    assert state.should_notify_update(s, "sha1") is False
-    assert state.should_notify_update(s, "sha2") is True

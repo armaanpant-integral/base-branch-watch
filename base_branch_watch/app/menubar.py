@@ -20,13 +20,20 @@ from AppKit import NSAlert, NSApplication, NSOpenPanel, NSWindowCollectionBehavi
 
 from base_branch_watch import cli
 from base_branch_watch.app import menu_builder
-from base_branch_watch.core import config, git_ops, log, pr_status, self_update, state
+from base_branch_watch.core import (
+    config,
+    git_ops,
+    log,
+    notify_policy,
+    pr_status,
+    self_update,
+    state,
+)
 from base_branch_watch.core.models import (
     MenuItemSpec,
     PrStatus,
     PrStatusKind,
     RepoStatus,
-    Severity,
     StatusKind,
 )
 from base_branch_watch.notify.base import Notifier
@@ -452,13 +459,14 @@ class BaseBranchWatchApp(rumps.App):
             self._update_info = self_update.check_for_update(self._checkout_root)
             self._render_update_item(self._update_info)
             info = self._update_info
-            if info is not None and state.should_notify_update(self._state, info.remote_sha):
-                self._notifier.send_message(
-                    "Base Branch Watch update available",
-                    f"{info.behind} new commit(s) on {info.base} - open the menu for details",
-                )
-                self._state = state.mark_notified_update(self._state, info.remote_sha)
-                state.save_state(self._state)
+            if info is not None:
+                decision = notify_policy.decide_update(self._state, info.remote_sha)
+                if decision.notify:
+                    self._notifier.send_message(
+                        "Base Branch Watch update available",
+                        f"{info.behind} new commit(s) on {info.base} - open the menu for details",
+                    )
+                self._persist_state(decision.state)
         except Exception as exc:  # noqa: BLE001 - isolate from the poll cycle
             log.append(f"[FAIL] update check raised: {exc!r}")
 
@@ -735,58 +743,12 @@ class BaseBranchWatchApp(rumps.App):
 
     # -- polling cycle -------------------------------------------------------
 
-    def _compute_notify_subset(self, statuses: list[RepoStatus]) -> list[RepoStatus]:
-        """Statuses needing attention whose SHA-based dedupe says "notify now".
-
-        Mutates self._state via state.mark_notified for every base whose
-        current SHA is included in the returned subset, so a repeated cycle
-        with an unchanged base SHA does not re-notify (must_have truth).
-        Repo-level or per-base CHECK_FAILED has no SHA to dedupe against, so
-        it always counts as "needs notification" while it keeps failing.
-
-        The unpushed-commit-count axis (status.unpushed) is deduped
-        independently of base SHAs (WR-01) — a repo whose worst status is
-        UNPUSHED-only re-notifies whenever the unpushed count itself changes,
-        even if every base's SHA is unchanged.
-        """
-        subset: list[RepoStatus] = []
-        for status in statuses:
-            if status.severity == Severity.OK:
-                continue
-
-            if status.failure_reason is not None:
-                subset.append(status)
-                continue
-
-            needs = False
-            base_shas: dict[str, str] = {}
-            for bs in status.branch_statuses:
-                if bs.kind == StatusKind.CHECK_FAILED:
-                    needs = True
-                    continue
-                sha = state.base_head_sha(status.repo_path, bs.base)
-                if sha is None:
-                    continue
-                base_shas[bs.base] = sha
-                if state.should_notify(self._state, status.repo_path, bs.base, sha):
-                    needs = True
-
-            if status.unpushed > 0:
-                if state.should_notify_unpushed(self._state, status.repo_path, status.unpushed):
-                    needs = True
-            else:
-                self._state = state.clear_notified_unpushed(self._state, status.repo_path)
-
-            if needs:
-                subset.append(status)
-                for base, sha in base_shas.items():
-                    self._state = state.mark_notified(self._state, status.repo_path, base, sha)
-                if status.unpushed > 0:
-                    self._state = state.mark_notified_unpushed(
-                        self._state, status.repo_path, status.unpushed
-                    )
-
-        return subset
+    def _persist_state(self, next_state: state.State) -> None:
+        """Adopt and save next_state only when it differs (send-then-persist, so a
+        failed send never marks anything notified)."""
+        if next_state != self._state:
+            self._state = next_state
+            state.save_state(self._state)
 
     def _log_status_line(self, status: RepoStatus) -> str:
         if status.failure_reason is not None:
@@ -903,10 +865,10 @@ class BaseBranchWatchApp(rumps.App):
                 self._last_pr_checked_at[repo_path] = now
             self._pr_statuses = self._merge_pr_statuses(statuses, fresh_pr_statuses)
 
-            subset = self._compute_notify_subset(statuses)
-            if subset:
-                self._notifier.send_digest(subset)
-                state.save_state(self._state)
+            digest = notify_policy.decide_digest(self._state, statuses)
+            if digest.statuses:
+                self._notifier.send_digest(digest.statuses)
+            self._persist_state(digest.state)
 
             self._render(statuses)
             # PR row is a second, independent row per repo (D-08) — rendered

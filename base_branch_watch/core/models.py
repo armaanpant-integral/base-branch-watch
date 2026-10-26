@@ -90,6 +90,10 @@ class BranchStatus:
     conflict_paths: list[str] = field(default_factory=list)
     """Set when `kind == CONFLICT_RISK` — sorted, deterministic list of file
     paths that overlap between local changes and the incoming base range."""
+    head_sha: str | None = None
+    """`origin/<base>` SHA at check time - the value notification dedupe
+    compares against. None when the base could not be checked (CHECK_FAILED)
+    or the ref could not be resolved."""
 
 
 @dataclass
