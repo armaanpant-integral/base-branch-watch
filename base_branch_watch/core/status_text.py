@@ -14,7 +14,7 @@ def base_summary(bs: BranchStatus, *, show_base: bool = True) -> str:
     """Phrase for one base branch; `show_base=False` for rows already labelled with the base."""
     base = f" ({bs.base})" if show_base else ""
     if bs.kind == StatusKind.CHECK_FAILED:
-        return f"check failed - {bs.reason or 'unknown error'}"
+        return f"check failed - {bs.reason or 'unknown error'}{base}"
     if bs.kind == StatusKind.DIVERGED:
         return f"diverged - {bs.behind} behind, {bs.ahead_of_base} ahead{base}"
     if bs.kind == StatusKind.CONFLICT_RISK:

@@ -649,6 +649,7 @@ def test_log_status_line_check_failed_base_is_labelled_fail():
     line = poll_cycle.status_log_line(_check_failed_single_base_status(name="repo-h"))
 
     assert line.startswith("[FAIL] repo-h: check failed - ")
+    assert line.endswith("(main)")
 
 
 def test_log_status_line_non_failed_bases_stay_ok():
@@ -848,3 +849,19 @@ def test_log_status_line_conflict_risk_names_the_conflict():
         poll_cycle.status_log_line(status)
         == "[OK] repo-c: conflict risk - 1 file(s) overlap (main)"
     )
+
+
+def test_repo_click_handler_up_to_date_with_unpushed_shows_the_unpushed_count(app, monkeypatch):
+    status = _status(
+        "myrepo",
+        unpushed=2,
+        branch_statuses=[
+            BranchStatus(base="main", behind=0, ahead_of_base=0, kind=StatusKind.UP_TO_DATE)
+        ],
+    )
+    app.statuses = {status.repo_path: status}
+    captured = _capture_alert(monkeypatch)
+
+    app._repo_click_handler(status.repo_path)(None)
+
+    assert captured["message"] == "2 unpushed"

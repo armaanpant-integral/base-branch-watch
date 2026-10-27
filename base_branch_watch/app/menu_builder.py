@@ -251,7 +251,9 @@ def _pr_row(pr_status: PrStatus, repo_name: str) -> MenuItemSpec:
         )
 
     if pr_status.kind == PrStatusKind.NOT_INSTALLED:
-        return MenuItemSpec(title=f"⚠️ {repo_name}: PR status — gh not installed", callback_key=None)
+        return MenuItemSpec(
+            title=f"⚠️ {repo_name}: PR status — gh not installed", callback_key=None
+        )
 
     if pr_status.kind == PrStatusKind.NOT_AUTHENTICATED:
         return MenuItemSpec(
@@ -268,7 +270,9 @@ def _pr_row(pr_status: PrStatus, repo_name: str) -> MenuItemSpec:
     # CHECK_FAILED and forward-compat fallback for any other kind — never a
     # raise/crash (D-11).
     reason = _truncate(pr_status.reason or "unknown error", PR_REASON_CAP)
-    return MenuItemSpec(title=f"⚠️ {repo_name}: PR status unavailable — {reason}", callback_key=None)
+    return MenuItemSpec(
+        title=f"⚠️ {repo_name}: PR status unavailable — {reason}", callback_key=None
+    )
 
 
 def title_for(statuses: list[RepoStatus]) -> str:

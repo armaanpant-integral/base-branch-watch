@@ -54,8 +54,13 @@ def _repo(*branch_statuses, unpushed=0, failure_reason=None):
             False,
             "conflict risk - 1 file(s) overlap",
         ),
-        (_bs(StatusKind.CHECK_FAILED, reason="fetch failed"), True, "check failed - fetch failed"),
-        (_bs(StatusKind.CHECK_FAILED), True, "check failed - unknown error"),
+        (
+            _bs(StatusKind.CHECK_FAILED, reason="fetch failed"),
+            True,
+            "check failed - fetch failed (main)",
+        ),
+        (_bs(StatusKind.CHECK_FAILED, reason="fetch failed"), False, "check failed - fetch failed"),
+        (_bs(StatusKind.CHECK_FAILED), True, "check failed - unknown error (main)"),
     ],
 )
 def test_base_summary(branch_status, show_base, expected):
@@ -82,7 +87,18 @@ def test_base_summary(branch_status, show_base, expected):
             _repo(_bs(StatusKind.CONFLICT_RISK, behind=1, conflict_paths=["a.py"])),
             "conflict risk - 1 file(s) overlap (main)",
         ),
-        (_repo(_bs(StatusKind.CHECK_FAILED, reason="no route")), "check failed - no route"),
+        (
+            _repo(_bs(StatusKind.CHECK_FAILED, reason="no route")),
+            "check failed - no route (main)",
+        ),
+        (
+            _repo(_bs(StatusKind.CHECK_FAILED, reason="no route"), unpushed=2),
+            "check failed - no route (main)",
+        ),
+        (
+            _repo(_bs(StatusKind.CONFLICT_RISK, conflict_paths=["a"]), unpushed=2),
+            "conflict risk - 1 file(s) overlap (main)",
+        ),
     ],
 )
 def test_repo_summary(status, expected):

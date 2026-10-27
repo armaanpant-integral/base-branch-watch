@@ -561,7 +561,9 @@ class BaseBranchWatchApp(rumps.App):
 
         resp = self._show_text_prompt(
             title="Add Repo",
-            message=(f"Base branch(es) to watch for {repo_name} - comma-separated for multiple:"),
+            message=(
+                f"Base branch(es) to watch for {repo_name} - comma-separated for multiple:"
+            ),
             default_text=detected or "main",
             ok="Add",
             cancel="Cancel",
@@ -664,10 +666,10 @@ class BaseBranchWatchApp(rumps.App):
     @staticmethod
     def _alert_message(bs: BranchStatus, summary: str) -> str:
         """Alert body: a failure shows its bare reason, a clean base a sentence,
-        anything else the shared status phrase."""
+        anything else the shared status phrase (so unpushed counts still show)."""
         if bs.kind == StatusKind.CHECK_FAILED:
             return bs.reason or "unknown error"
-        if bs.kind == StatusKind.UP_TO_DATE:
+        if summary == "up to date":
             return "Up to date."
         return summary
 
