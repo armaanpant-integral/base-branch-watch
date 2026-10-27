@@ -155,3 +155,69 @@ def test_load_config_missing_poll_interval_field_defaults_to_300(bbw_config_dir)
     loaded = config.load_config()
 
     assert loaded.poll_interval_seconds == 300
+
+
+def test_load_config_corrupt_file_returns_defaults_and_leaves_it_alone_by_default(bbw_config_dir):
+    target = config.config_dir() / config.CONFIG_FILENAME
+    target.write_text("{not json")
+
+    loaded = config.load_config()
+
+    assert loaded.repos == []
+    assert target.read_text() == "{not json"
+
+
+def test_load_config_quarantine_keeps_a_corrupt_file_out_of_the_next_save(bbw_config_dir):
+    target = config.config_dir() / config.CONFIG_FILENAME
+    target.write_text("{not json")
+
+    loaded = config.load_config(quarantine=True)
+    config.save_config(config.add_repo(loaded, "/tmp/new", ["main"]))
+
+    assert (bbw_config_dir / f"{config.CONFIG_FILENAME}.corrupt").read_text() == "{not json"
+    assert config.load_config().repos[0].repo_path == "/tmp/new"
+
+
+def test_load_config_quarantine_also_moves_aside_a_wrongly_shaped_file(bbw_config_dir):
+    target = config.config_dir() / config.CONFIG_FILENAME
+    target.write_text(json.dumps({"repos": 5}))
+
+    loaded = config.load_config(quarantine=True)
+
+    assert loaded.repos == []
+    assert (bbw_config_dir / f"{config.CONFIG_FILENAME}.corrupt").exists()
+    assert not target.exists()
+
+
+def test_load_config_corruption_is_written_to_the_log(bbw_config_dir):
+    from base_branch_watch.core import log
+
+    (config.config_dir() / config.CONFIG_FILENAME).write_text("{not json")
+
+    config.load_config(quarantine=True)
+
+    assert "[FAIL] config.json is not valid JSON" in log.log_path().read_text()
+
+
+def test_save_config_failure_returns_the_error_instead_of_raising(bbw_config_dir):
+    config.config_dir().chmod(0o500)
+    try:
+        result = config.save_config(config.AppConfig())
+    finally:
+        config.config_dir().chmod(0o755)
+
+    assert not result.ok
+    assert result.error
+
+
+def test_default_load_config_never_writes_to_the_app_dir_even_on_a_corrupt_file(bbw_config_dir):
+    """The one-shot pre-push hook reads config without side effects: no quarantine, no log."""
+    from base_branch_watch.core import log
+
+    (config.config_dir() / config.CONFIG_FILENAME).write_text("{not json")
+    before = sorted(p.name for p in bbw_config_dir.iterdir())
+
+    config.load_config()
+
+    assert sorted(p.name for p in bbw_config_dir.iterdir()) == before
+    assert not log.log_path().exists()
