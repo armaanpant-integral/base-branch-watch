@@ -58,3 +58,17 @@ def test_rotate_if_needed_never_raises_when_the_dir_is_unusable(bbw_config_dir, 
 
     log.rotate_if_needed(today="2020-01-02")  # must not raise
     log.append("also fine")
+
+
+def test_a_failing_day_marker_does_not_wipe_the_log_on_every_append(bbw_config_dir, monkeypatch):
+    log.append("keep me")
+    marker = bbw_config_dir / log.DAY_MARKER_FILENAME
+    marker.write_text("2020-01-01")
+    marker.chmod(0o400)
+    try:
+        log.rotate_if_needed(today="2020-01-02")
+        log.append("also kept")
+    finally:
+        marker.chmod(0o644)
+
+    assert log.log_path().read_text() == "keep me\nalso kept\n"

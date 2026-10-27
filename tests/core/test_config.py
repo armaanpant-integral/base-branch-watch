@@ -208,3 +208,16 @@ def test_save_config_failure_returns_the_error_instead_of_raising(bbw_config_dir
 
     assert not result.ok
     assert result.error
+
+
+def test_default_load_config_never_writes_to_the_app_dir_even_on_a_corrupt_file(bbw_config_dir):
+    """The one-shot pre-push hook reads config without side effects: no quarantine, no log."""
+    from base_branch_watch.core import log
+
+    (config.config_dir() / config.CONFIG_FILENAME).write_text("{not json")
+    before = sorted(p.name for p in bbw_config_dir.iterdir())
+
+    config.load_config()
+
+    assert sorted(p.name for p in bbw_config_dir.iterdir()) == before
+    assert not log.log_path().exists()

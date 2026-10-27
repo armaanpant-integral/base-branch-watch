@@ -171,3 +171,35 @@ def test_write_object_cleans_up_the_temp_file_when_replace_fails(monkeypatch, bb
     assert not result.ok
     assert "disk on fire" in result.error
     assert not (store.config_dir() / ".x.json.tmp").exists()
+
+
+def test_read_object_undecodable_bytes_count_as_corrupt(bbw_config_dir):
+    path = store.config_dir() / "x.json"
+    path.write_bytes(b"\xff\xfe not utf-8")
+    lines, report = _reports()
+
+    assert store.read_object("x.json", quarantine=True, report=report) is None
+
+    assert (store.config_dir() / "x.json.corrupt").exists()
+    assert lines[0].startswith("[FAIL] x.json is not valid JSON")
+
+
+def test_read_object_never_raises_when_the_data_dir_cannot_be_created(monkeypatch):
+    def broken_config_dir():
+        raise OSError("read-only volume")
+
+    monkeypatch.setattr(store, "config_dir", broken_config_dir)
+    lines, report = _reports()
+
+    assert store.read_object("x.json", report=report) is None
+    assert "read-only volume" in lines[0]
+
+
+def test_write_object_unserializable_payload_is_a_failed_result_not_an_exception(
+    bbw_config_dir,
+):
+    result = store.write_object("x.json", {"bad": object()})
+
+    assert not result.ok
+    assert not (store.config_dir() / ".x.json.tmp").exists()
+    assert not (store.config_dir() / "x.json").exists()

@@ -21,7 +21,8 @@ State = dict[str, dict[str, str]]
 
 def load_state(*, quarantine: bool = False) -> State:
     """Load State from disk, returning {} if the file is missing or unusable."""
-    raw = store.read_object(STATE_FILENAME, quarantine=quarantine, report=log.append)
+    report = log.append if quarantine else store.ignore
+    raw = store.read_object(STATE_FILENAME, quarantine=quarantine, report=report)
     return {} if raw is None else raw
 
 

@@ -39,8 +39,10 @@ def rotate_if_needed(today: str | None = None) -> None:
         last_day = marker_path.read_text().strip() if marker_path.exists() else ""
 
         if today != last_day:
-            log_path().write_text("")
+            # Marker first: if it cannot be written the log is kept, instead of being
+            # truncated again by every append.
             marker_path.write_text(today)
+            log_path().write_text("")
     except OSError:
         pass
 

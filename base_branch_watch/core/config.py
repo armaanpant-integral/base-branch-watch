@@ -31,9 +31,11 @@ def load_config(*, quarantine: bool = False) -> AppConfig:
     """Load AppConfig from disk, returning defaults if the file is missing or unusable.
 
     `quarantine=True` (the app, the single writer) moves a corrupt file aside so the next
-    save cannot silently erase the watched repos; the pre-push hook reads without it.
+    save cannot silently erase the watched repos, and logs why. The pre-push hook reads
+    without it and touches nothing in the app dir, the log included.
     """
-    raw = store.read_object(CONFIG_FILENAME, quarantine=quarantine, report=log.append)
+    report = log.append if quarantine else store.ignore
+    raw = store.read_object(CONFIG_FILENAME, quarantine=quarantine, report=report)
     if raw is None:
         return AppConfig()
 
@@ -46,7 +48,7 @@ def load_config(*, quarantine: bool = False) -> AppConfig:
         poll_interval = raw.get("poll_interval_seconds", DEFAULT_POLL_INTERVAL_SECONDS)
     except (AttributeError, TypeError, KeyError):
         if quarantine:
-            store.quarantine_file(CONFIG_FILENAME, "unexpected shape", report=log.append)
+            store.quarantine_file(CONFIG_FILENAME, "unexpected shape", report=report)
         return AppConfig()
     return AppConfig(poll_interval_seconds=poll_interval, repos=repos)
 
