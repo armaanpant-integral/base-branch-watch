@@ -286,7 +286,6 @@ def test_final_state_unparseable_json_maps_to_no_pr():
 def test_module_level_wrappers_delegate_to_a_default_reader():
     assert callable(pr_status.check_pr)
     assert callable(pr_status.final_state)
-    assert callable(pr_status.rate_limit_reset_text)
 
 
 def test_pr_status_modules_are_pure_no_rumps_or_appkit_import():

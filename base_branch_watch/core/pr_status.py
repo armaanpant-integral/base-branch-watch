@@ -4,8 +4,7 @@
 ...); the actual `gh` process lives behind the `GhClient` seam (core/gh_client.py).
 The reader takes its client and its current-branch lookup in the constructor, so
 tests need no patching. The module-level `check_pr` / `final_state` /
-`rate_limit_reset_text` are thin wrappers over a default reader for callers that
-do not inject one.
+are thin wrappers over a default reader for callers that do not inject one.
 """
 
 from __future__ import annotations
@@ -39,8 +38,8 @@ class PrStatusReader:
         """Fetch the current branch's PR state via `gh`. Never raises.
 
         Distinguishes OPEN / NO_PR / NOT_INSTALLED / NOT_AUTHENTICATED /
-        RATE_LIMITED / CHECK_FAILED (D-09/D-10/D-11) - five distinct
-        failure/absence sentinels, never a generic catch-all.
+        RATE_LIMITED / CHECK_FAILED (D-09/D-10/D-11) - six distinct
+        failure/absence kinds, never a generic catch-all.
         """
         if not self._client.installed:
             return PrStatus(kind=PrStatusKind.NOT_INSTALLED)
@@ -109,12 +108,10 @@ class PrStatusReader:
         only ever consulted for a one-cycle confirmation, never the primary
         state source).
         """
-        if not self._client.installed:
-            return PrStatusKind.NO_PR
         result = self._client.run(
             repo_path, ["pr", "view", str(number), "--json", "state"], timeout
         )
-        if result.error is not None or result.returncode != 0:
+        if not result.ok:
             return PrStatusKind.NO_PR
         try:
             state = json.loads(result.stdout).get("state")
@@ -134,10 +131,8 @@ class PrStatusReader:
         the graphql resource - not core - is the relevant quota. Never raises;
         returns None on any failure (D-10's reset time is best-effort).
         """
-        if not self._client.installed:
-            return None
         result = self._client.run(None, ["api", "rate_limit"], timeout)
-        if result.error is not None or result.returncode != 0:
+        if not result.ok:
             return None
         try:
             reset_epoch = json.loads(result.stdout)["resources"]["graphql"]["reset"]
@@ -184,7 +179,3 @@ def check_pr(repo_path: str, timeout: int = 15) -> PrStatus:
 
 def final_state(repo_path: str, number: int, timeout: int = 15) -> PrStatusKind:
     return _default_reader.final_state(repo_path, number, timeout)
-
-
-def rate_limit_reset_text(timeout: int = 10) -> str | None:
-    return _default_reader.rate_limit_reset_text(timeout)

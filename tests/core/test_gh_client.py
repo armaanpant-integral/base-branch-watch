@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import stat
 
-import pytest
-
 from base_branch_watch.core.gh_client import SubprocessGhClient
 
 
@@ -79,13 +77,12 @@ def test_run_without_gh_installed_is_an_error_outcome(tmp_path, monkeypatch):
 
     outcome = SubprocessGhClient().run(None, ["api", "rate_limit"], timeout=5)
 
-    assert outcome.error is not None
+    assert outcome.error == "gh is not installed"
 
 
-@pytest.mark.parametrize("repo_path", [None])
-def test_run_without_a_repo_path_runs_in_the_current_directory(repo_path, tmp_path, monkeypatch):
+def test_run_without_a_repo_path_runs_in_the_current_directory(tmp_path, monkeypatch):
     _install_stub_gh(tmp_path, monkeypatch, "echo ok")
 
-    outcome = SubprocessGhClient().run(repo_path, ["api", "rate_limit"], timeout=5)
+    outcome = SubprocessGhClient().run(None, ["api", "rate_limit"], timeout=5)
 
     assert outcome.stdout.strip() == "ok"

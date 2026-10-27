@@ -32,6 +32,8 @@ class FakeGhClient:
 
     def run(self, repo_path: str | None, args: list[str], timeout: int) -> GhOutcome:
         self.calls.append((repo_path, tuple(args)))
+        if not self.installed:
+            return broken("gh is not installed")
         for prefix, outcome in self._responses.items():
             if tuple(args[: len(prefix)]) == prefix:
                 return outcome

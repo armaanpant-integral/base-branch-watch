@@ -26,6 +26,10 @@ class GhOutcome:
     error: str | None = None
     """Set when gh never produced an exit status (timeout, OSError): the full message."""
 
+    @property
+    def ok(self) -> bool:
+        return self.error is None and self.returncode == 0
+
 
 class GhClient(Protocol):
     @property
