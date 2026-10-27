@@ -25,6 +25,9 @@ bbwatch = "base_branch_watch.cli:main"
 [tool.setuptools.packages.find]
 include = ["base_branch_watch*"]
 
+[tool.setuptools.package-data]
+"base_branch_watch.core" = ["*.template"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"
