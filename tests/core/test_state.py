@@ -39,3 +39,26 @@ def test_save_state_writes_atomically_via_temp_file_and_replace(bbw_config_dir):
     tmp = bbw_config_dir / ".state.json.tmp"
     assert target.exists()
     assert not tmp.exists()
+
+
+def test_load_state_corrupt_file_is_empty_and_quarantined_on_request(bbw_config_dir):
+    target = bbw_config_dir / "state.json"
+    bbw_config_dir.mkdir(parents=True, exist_ok=True)
+    target.write_text("[1]")
+
+    assert state.load_state() == {}
+    assert target.exists()
+
+    assert state.load_state(quarantine=True) == {}
+    assert (bbw_config_dir / "state.json.corrupt").exists()
+
+
+def test_save_state_failure_returns_the_error_instead_of_raising(bbw_config_dir):
+    state.load_state()  # creates the dir
+    bbw_config_dir.chmod(0o500)
+    try:
+        result = state.save_state({"/r": {"main": "abc"}})
+    finally:
+        bbw_config_dir.chmod(0o755)
+
+    assert not result.ok

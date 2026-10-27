@@ -35,3 +35,26 @@ def test_rotate_if_needed_same_day_does_not_retruncate(bbw_config_dir):
     log.rotate_if_needed(today="2020-01-02")
 
     assert log.log_path().read_text() == "fresh line\n"
+
+
+def test_append_never_raises_when_the_log_cannot_be_written(bbw_config_dir):
+    log.append("first")
+    bbw_config_dir.chmod(0o500)
+    log.log_path().chmod(0o400)
+    try:
+        log.append("dropped")  # must not raise
+    finally:
+        log.log_path().chmod(0o644)
+        bbw_config_dir.chmod(0o755)
+
+    assert log.log_path().read_text() == "first\n"
+
+
+def test_rotate_if_needed_never_raises_when_the_dir_is_unusable(bbw_config_dir, monkeypatch):
+    def broken_config_dir():
+        raise OSError("no home")
+
+    monkeypatch.setattr(log.store, "config_dir", broken_config_dir)
+
+    log.rotate_if_needed(today="2020-01-02")  # must not raise
+    log.append("also fine")

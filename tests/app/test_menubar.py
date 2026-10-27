@@ -865,3 +865,39 @@ def test_repo_click_handler_up_to_date_with_unpushed_shows_the_unpushed_count(ap
     app._repo_click_handler(status.repo_path)(None)
 
     assert captured["message"] == "2 unpushed"
+
+
+def test_failed_config_save_is_shown_to_the_user(app, monkeypatch):
+    from base_branch_watch.core import config
+    from base_branch_watch.core.store import WriteResult
+
+    monkeypatch.setattr(
+        config, "save_config", lambda cfg: WriteResult(ok=False, error="No space left on device")
+    )
+    captured = _capture_alert(monkeypatch)
+
+    app._save_config()
+
+    assert captured["title"] == "Could not save config"
+    assert captured["message"] == "No space left on device"
+
+
+def test_successful_config_save_shows_no_alert(app, monkeypatch):
+    captured = _capture_alert(monkeypatch)
+
+    app._save_config()
+
+    assert captured == {}
+
+
+def test_startup_quarantines_a_corrupt_config_instead_of_overwriting_it(bbw_config_dir):
+    bbw_config_dir.mkdir(parents=True, exist_ok=True)
+    (bbw_config_dir / "config.json").write_text("{not json")
+
+    instance = menubar.BaseBranchWatchApp()
+    try:
+        assert instance.cfg.repos == []
+    finally:
+        instance.timer.stop()
+
+    assert (bbw_config_dir / "config.json.corrupt").read_text() == "{not json"
