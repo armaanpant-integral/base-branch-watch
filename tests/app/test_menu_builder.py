@@ -223,7 +223,8 @@ def test_build_check_failed_row_repo_level():
 def test_build_check_failed_row_single_base_level():
     specs = menu_builder.build([_check_failed_single_base_status("myrepo")], has_repos=True)
 
-    assert specs[0].title == "🔴 myrepo: check failed - fetch failed — check network/SSH access (main)"
+    expected = "🔴 myrepo: check failed - fetch failed — check network/SSH access (main)"
+    assert specs[0].title == expected
 
 
 def test_build_not_checked_row_uses_ellipsis_and_is_not_clickable():
