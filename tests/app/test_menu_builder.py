@@ -163,14 +163,14 @@ def test_build_diverged_row():
     status = _diverged_status("myrepo", behind=3, ahead=2, base="main")
     specs = menu_builder.build([status], has_repos=True)
 
-    assert specs[0].title == "🔴 myrepo: diverged — 3 behind, 2 ahead (main)"
+    assert specs[0].title == "🔴 myrepo: diverged - 3 behind, 2 ahead (main)"
 
 
 def test_build_conflict_risk_row_shows_badge():
     status = _conflict_risk_status("myrepo", conflict_paths=("a.py", "b.py"), base="main")
     specs = menu_builder.build([status], has_repos=True)
 
-    assert specs[0].title == "⚠️ myrepo: conflict risk — 2 file(s) overlap (main)"
+    assert specs[0].title == "⚠️ myrepo: conflict risk - 2 file(s) overlap (main)"
 
 
 def test_build_conflict_risk_lists_overlapping_paths():
@@ -217,13 +217,13 @@ def test_build_multi_base_conflict_risk_child_row_has_path_children():
 def test_build_check_failed_row_repo_level():
     specs = menu_builder.build([_check_failed_status("myrepo")], has_repos=True)
 
-    assert specs[0].title == "🔴 myrepo: check failed — fetch failed — check network/SSH access"
+    assert specs[0].title == "🔴 myrepo: check failed - fetch failed — check network/SSH access"
 
 
 def test_build_check_failed_row_single_base_level():
     specs = menu_builder.build([_check_failed_single_base_status("myrepo")], has_repos=True)
 
-    assert specs[0].title == "🔴 myrepo: check failed — fetch failed — check network/SSH access"
+    assert specs[0].title == "🔴 myrepo: check failed - fetch failed — check network/SSH access"
 
 
 def test_build_not_checked_row_uses_ellipsis_and_is_not_clickable():
@@ -245,7 +245,7 @@ def test_build_multi_base_row_has_no_repo_name_no_unpushed_children_no_parent_ca
     main_child = next(c for c in parent.children if c.title.startswith("🟢"))
     release_child = next(c for c in parent.children if c.title.startswith("🔴"))
     assert main_child.title == "🟢 main"
-    assert release_child.title == "🔴 release: diverged — 4 behind, 1 ahead"
+    assert release_child.title == "🔴 release: diverged - 4 behind, 1 ahead"
     assert main_child.callback_key is not None
     assert release_child.callback_key is not None
 

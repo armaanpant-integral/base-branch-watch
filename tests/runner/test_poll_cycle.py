@@ -233,7 +233,7 @@ def test_log_lines_label_check_failed_as_fail_and_the_rest_ok():
 
     assert result.log_lines == [
         "[OK] ok: up to date",
-        "[FAIL] bad: check failed - fetch failed (main)",
+        "[FAIL] bad: check failed - fetch failed",
         "[OK] div: diverged - 3 behind, 2 ahead (main)",
     ]
 

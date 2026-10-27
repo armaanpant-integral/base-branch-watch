@@ -17,7 +17,8 @@ from __future__ import annotations
 
 import subprocess
 
-from base_branch_watch.core.models import RepoStatus, StatusKind
+from base_branch_watch.core import status_text
+from base_branch_watch.core.models import RepoStatus
 
 _MAX_BODY_CHARS = 300
 
@@ -26,31 +27,6 @@ def _escape(text: str) -> str:
     """Escape characters that would break the AppleScript string literal
     this module builds (T-4-01 mitigation) — backslash first, then quotes."""
     return text.replace("\\", "\\\\").replace('"', '\\"')
-
-
-def _short_status(status: RepoStatus) -> str:
-    """Mirror the per-repo row text (01-UI-SPEC.md) minus the leading glyph
-    and repo name — this becomes the digest body's per-repo line suffix."""
-    if status.failure_reason is not None:
-        return f"check failed — {status.failure_reason}"
-
-    bs = status.worst_branch_status
-    if bs is None:
-        return "not checked yet"
-
-    if bs.kind == StatusKind.CHECK_FAILED:
-        return f"check failed — {bs.reason or 'unknown error'}"
-    if bs.kind == StatusKind.DIVERGED:
-        return f"diverged — {bs.behind} behind, {bs.ahead_of_base} ahead ({bs.base})"
-    if bs.kind == StatusKind.BEHIND:
-        if status.unpushed > 0:
-            return f"{bs.behind} behind ({bs.base}) · {status.unpushed} unpushed"
-        return f"{bs.behind} behind ({bs.base})"
-
-    # Worst branch is UP_TO_DATE — unpushed alone still needs attention.
-    if status.unpushed > 0:
-        return f"{status.unpushed} unpushed"
-    return "up to date"
 
 
 def _build_body(lines: list[str]) -> str:
@@ -84,7 +60,7 @@ class OsascriptNotifier:
         n = len(statuses)
         title = f"{n} repo needs attention" if n == 1 else f"{n} repos need attention"
         subtitle = "Base Branch Watch"
-        lines = [f"{status.name}: {_short_status(status)}" for status in statuses]
+        lines = [f"{status.name}: {status_text.repo_summary(status)}" for status in statuses]
         body = _build_body(lines)
 
         self._display(body, title, subtitle)

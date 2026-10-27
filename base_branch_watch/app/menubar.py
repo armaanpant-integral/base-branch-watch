@@ -27,8 +27,10 @@ from base_branch_watch.core import (
     notify_policy,
     self_update,
     state,
+    status_text,
 )
 from base_branch_watch.core.models import (
+    BranchStatus,
     MenuItemSpec,
     RepoStatus,
     StatusKind,
@@ -559,9 +561,7 @@ class BaseBranchWatchApp(rumps.App):
 
         resp = self._show_text_prompt(
             title="Add Repo",
-            message=(
-                f"Base branch(es) to watch for {repo_name} - comma-separated for multiple:"
-            ),
+            message=(f"Base branch(es) to watch for {repo_name} - comma-separated for multiple:"),
             default_text=detected or "main",
             ok="Add",
             cancel="Cancel",
@@ -661,6 +661,16 @@ class BaseBranchWatchApp(rumps.App):
         self.timer = rumps.Timer(self.check_all, self.cfg.poll_interval_seconds)
         self.timer.start()
 
+    @staticmethod
+    def _alert_message(bs: BranchStatus, summary: str) -> str:
+        """Alert body: a failure shows its bare reason, a clean base a sentence,
+        anything else the shared status phrase."""
+        if bs.kind == StatusKind.CHECK_FAILED:
+            return bs.reason or "unknown error"
+        if bs.kind == StatusKind.UP_TO_DATE:
+            return "Up to date."
+        return summary
+
     def _repo_click_handler(self, repo_path: str):
         def handler(_sender):
             self._activate()
@@ -674,24 +684,10 @@ class BaseBranchWatchApp(rumps.App):
             branch_status = status.worst_branch_status
             if branch_status is None:
                 self._show_alert(title=status.name, message="Up to date.")
-            elif branch_status.kind == StatusKind.CHECK_FAILED:
-                self._show_alert(
-                    title=status.name, message=branch_status.reason or "unknown error"
-                )
-            elif branch_status.kind == StatusKind.DIVERGED:
-                self._show_alert(
-                    title=status.name,
-                    message=(
-                        f"Diverged — {branch_status.behind} behind, "
-                        f"{branch_status.ahead_of_base} ahead ({branch_status.base})."
-                    ),
-                )
-            elif branch_status.behind == 0:
-                self._show_alert(title=status.name, message="Up to date.")
             else:
                 self._show_alert(
                     title=status.name,
-                    message=f"{branch_status.behind} commits behind ({branch_status.base}).",
+                    message=self._alert_message(branch_status, status_text.repo_summary(status)),
                 )
 
         return handler
@@ -711,17 +707,9 @@ class BaseBranchWatchApp(rumps.App):
             title = f"{status.name} ({base})"
             if bs is None:
                 self._show_alert(title=title, message="Not checked yet.")
-            elif bs.kind == StatusKind.CHECK_FAILED:
-                self._show_alert(title=title, message=bs.reason or "unknown error")
-            elif bs.kind == StatusKind.DIVERGED:
-                self._show_alert(
-                    title=title,
-                    message=f"Diverged — {bs.behind} behind, {bs.ahead_of_base} ahead.",
-                )
-            elif bs.behind == 0:
-                self._show_alert(title=title, message="Up to date.")
             else:
-                self._show_alert(title=title, message=f"{bs.behind} commits behind.")
+                summary = status_text.base_summary(bs, show_base=False)
+                self._show_alert(title=title, message=self._alert_message(bs, summary))
 
         return handler
 
