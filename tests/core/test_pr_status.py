@@ -1,49 +1,45 @@
-"""Tests for core.pr_status.check_pr — gh subprocess invocation + parsing.
+"""Tests for core.pr_status.PrStatusReader - gh output parsing + classification.
 
-subprocess.run is mocked — no real `gh` invocation in tests (mirrors
-tests/notify/test_osascript_notifier.py's mocked-subprocess style).
-
-RED until Task 2 implements core/pr_status.py::check_pr — these tests
-reference check_pr, so they fail with ImportError/AttributeError, not wrong
-assertions, until then.
+The reader takes a `GhClient`; tests use the in-memory FakeGhClient (no
+subprocess, no patching). The real subprocess adapter is covered in
+test_gh_client.py.
 """
 
 from __future__ import annotations
 
 import datetime
 import json
-import subprocess
-from unittest.mock import patch
 
+from base_branch_watch.core import pr_status
 from base_branch_watch.core.models import PrStatusKind
+from tests.core.fake_gh import FakeGhClient, broken, fail, ok
+
+VIEW = ("pr", "view", "--json")
+CHECKS = ("pr", "checks")
+RATE_LIMIT = ("api", "rate_limit")
 
 
-def _completed(returncode: int, stdout: str = "", stderr: str = "") -> subprocess.CompletedProcess:
-    return subprocess.CompletedProcess(
-        args=["gh"], returncode=returncode, stdout=stdout, stderr=stderr
+def _reader(responses, installed=True, branch="feature") -> pr_status.PrStatusReader:
+    return pr_status.PrStatusReader(
+        FakeGhClient(responses, installed=installed), current_branch=lambda path: branch
     )
+
+
+def _checks(*buckets: str) -> str:
+    return json.dumps([{"bucket": b} for b in buckets])
+
+
+# -- check_pr: OPEN ------------------------------------------------------------
 
 
 def test_check_pr_open_returns_open_kind_with_parsed_fields():
-    from base_branch_watch.core import pr_status
-
-    view_result = _completed(
-        0,
-        stdout=(
-            '{"number":42,"state":"OPEN","mergeable":"MERGEABLE",'
-            '"mergeStateStatus":"CLEAN","reviewDecision":"APPROVED",'
-            '"baseRefName":"main"}'
-        ),
+    view = ok(
+        '{"number":42,"state":"OPEN","mergeable":"MERGEABLE",'
+        '"mergeStateStatus":"CLEAN","reviewDecision":"APPROVED","baseRefName":"main"}'
     )
-    checks_result = _completed(0, stdout='[{"bucket":"pass"},{"bucket":"pass"},{"bucket":"pass"}]')
+    reader = _reader({VIEW: view, CHECKS: ok(_checks("pass", "pass", "pass"))})
 
-    with patch(
-        "base_branch_watch.core.pr_status.GH", "/usr/local/bin/gh"
-    ), patch(
-        "base_branch_watch.core.pr_status.subprocess.run",
-        side_effect=[view_result, checks_result],
-    ):
-        status = pr_status.check_pr("/tmp/repo")
+    status = reader.check_pr("/tmp/repo")
 
     assert status.kind == PrStatusKind.OPEN
     assert status.number == 42
@@ -55,27 +51,13 @@ def test_check_pr_open_returns_open_kind_with_parsed_fields():
 
 
 def test_check_pr_open_aggregates_checks_bucket_counts():
-    from base_branch_watch.core import pr_status
-
-    view_result = _completed(
-        0,
-        stdout=(
-            '{"number":7,"state":"OPEN","mergeable":"CONFLICTING",'
-            '"mergeStateStatus":"DIRTY","reviewDecision":null,'
-            '"baseRefName":"main"}'
-        ),
+    view = ok(
+        '{"number":7,"state":"OPEN","mergeable":"CONFLICTING",'
+        '"mergeStateStatus":"DIRTY","reviewDecision":null,"baseRefName":"main"}'
     )
-    bucket_values = ["pass"] * 8 + ["fail"] * 3
-    checks_stdout = "[" + ",".join(f'{{"bucket":"{b}"}}' for b in bucket_values) + "]"
-    checks_result = _completed(0, stdout=checks_stdout)
+    reader = _reader({VIEW: view, CHECKS: ok(_checks(*["pass"] * 8, *["fail"] * 3))})
 
-    with patch(
-        "base_branch_watch.core.pr_status.GH", "/usr/local/bin/gh"
-    ), patch(
-        "base_branch_watch.core.pr_status.subprocess.run",
-        side_effect=[view_result, checks_result],
-    ):
-        status = pr_status.check_pr("/tmp/repo")
+    status = reader.check_pr("/tmp/repo")
 
     assert status.kind == PrStatusKind.OPEN
     assert status.checks_pass == 8
@@ -83,345 +65,236 @@ def test_check_pr_open_aggregates_checks_bucket_counts():
     assert status.checks_total == 11
 
 
+def test_check_pr_runs_gh_in_the_repo_directory():
+    client = FakeGhClient({VIEW: ok('{"number":1,"state":"OPEN"}'), CHECKS: ok("[]")})
+
+    pr_status.PrStatusReader(client, current_branch=lambda path: None).check_pr("/tmp/repo")
+
+    assert {repo_path for repo_path, _args in client.calls} == {"/tmp/repo"}
+
+
+# -- check_pr: absence / failure sentinels ------------------------------------
+
+
 def test_check_pr_no_pr_returns_no_pr_kind_with_current_branch():
-    from base_branch_watch.core import pr_status
+    reader = _reader({VIEW: fail(1, 'no pull requests found for branch "feature"\n')})
 
-    view_result = _completed(1, stderr='no pull requests found for branch "feature"\n')
-
-    with patch(
-        "base_branch_watch.core.pr_status.GH", "/usr/local/bin/gh"
-    ), patch(
-        "base_branch_watch.core.pr_status.subprocess.run", return_value=view_result
-    ), patch(
-        "base_branch_watch.core.pr_status.git_ops.current_branch", return_value="feature"
-    ):
-        status = pr_status.check_pr("/tmp/repo")
+    status = reader.check_pr("/tmp/repo")
 
     assert status.kind == PrStatusKind.NO_PR
     assert status.current_branch == "feature"
 
 
 def test_check_pr_not_installed_when_gh_missing():
-    from base_branch_watch.core import pr_status
-
-    with patch("base_branch_watch.core.pr_status.GH", None):
-        status = pr_status.check_pr("/tmp/repo")
+    status = _reader({}, installed=False).check_pr("/tmp/repo")
 
     assert status.kind == PrStatusKind.NOT_INSTALLED
 
 
 def test_check_pr_other_failure_returns_check_failed():
-    from base_branch_watch.core import pr_status
-
-    view_result = _completed(1, stderr="some other gh error")
-
-    with patch(
-        "base_branch_watch.core.pr_status.GH", "/usr/local/bin/gh"
-    ), patch(
-        "base_branch_watch.core.pr_status.subprocess.run", return_value=view_result
-    ):
-        status = pr_status.check_pr("/tmp/repo")
+    status = _reader({VIEW: fail(1, "some other gh error")}).check_pr("/tmp/repo")
 
     assert status.kind == PrStatusKind.CHECK_FAILED
     assert status.reason == "some other gh error"
 
 
-def test_check_pr_timeout_returns_check_failed():
-    from base_branch_watch.core import pr_status
-
-    with patch(
-        "base_branch_watch.core.pr_status.GH", "/usr/local/bin/gh"
-    ), patch(
-        "base_branch_watch.core.pr_status.subprocess.run",
-        side_effect=subprocess.TimeoutExpired(cmd="gh", timeout=15),
-    ):
-        status = pr_status.check_pr("/tmp/repo")
+def test_check_pr_timeout_returns_check_failed_with_the_client_error_text():
+    status = _reader({VIEW: broken("gh pr view timed out after 15s")}).check_pr("/tmp/repo")
 
     assert status.kind == PrStatusKind.CHECK_FAILED
+    assert status.reason == "gh pr view timed out after 15s"
 
 
-# -- Task 1 (Plan 02): NOT_AUTHENTICATED / RATE_LIMITED + rate-limit reset --
+def test_check_pr_unparseable_json_returns_check_failed():
+    status = _reader({VIEW: ok("not json")}).check_pr("/tmp/repo")
+
+    assert status.kind == PrStatusKind.CHECK_FAILED
+    assert status.reason == "gh pr view returned unparseable JSON"
 
 
 def test_check_pr_returncode_4_returns_not_authenticated():
-    from base_branch_watch.core import pr_status
-
-    view_result = _completed(
-        4, stderr="To get started with GitHub CLI, please run:  gh auth login\n"
+    reader = _reader(
+        {VIEW: fail(4, "To get started with GitHub CLI, please run:  gh auth login\n")}
     )
 
-    with patch(
-        "base_branch_watch.core.pr_status.GH", "/usr/local/bin/gh"
-    ), patch(
-        "base_branch_watch.core.pr_status.subprocess.run", return_value=view_result
-    ):
-        status = pr_status.check_pr("/tmp/repo")
-
-    assert status.kind == PrStatusKind.NOT_AUTHENTICATED
+    assert reader.check_pr("/tmp/repo").kind == PrStatusKind.NOT_AUTHENTICATED
 
 
 def test_check_pr_rate_limit_stderr_returns_rate_limited_with_retry_at():
-    from base_branch_watch.core import pr_status
+    reset_epoch = 1784097752
+    resources = {"graphql": {"reset": reset_epoch}}
+    reader = _reader(
+        {
+            VIEW: fail(1, "API rate limit exceeded for installation ID 12345.\n"),
+            RATE_LIMIT: ok(json.dumps({"resources": resources})),
+        }
+    )
 
-    view_result = _completed(1, stderr="API rate limit exceeded for installation ID 12345.\n")
-
-    with patch(
-        "base_branch_watch.core.pr_status.GH", "/usr/local/bin/gh"
-    ), patch(
-        "base_branch_watch.core.pr_status.subprocess.run", return_value=view_result
-    ), patch(
-        "base_branch_watch.core.pr_status.rate_limit_reset_text", return_value="14:30"
-    ):
-        status = pr_status.check_pr("/tmp/repo")
+    status = reader.check_pr("/tmp/repo")
 
     assert status.kind == PrStatusKind.RATE_LIMITED
-    assert status.retry_at == "14:30"
+    assert status.retry_at == datetime.datetime.fromtimestamp(reset_epoch).strftime("%H:%M")
 
 
 def test_check_pr_rate_limit_lowercase_message_also_detected():
-    from base_branch_watch.core import pr_status
+    reader = _reader(
+        {
+            VIEW: fail(1, "you have exceeded a secondary rate limit\n"),
+            RATE_LIMIT: broken("gh api rate_limit timed out after 10s"),
+        }
+    )
 
-    view_result = _completed(1, stderr="you have exceeded a secondary rate limit\n")
-
-    with patch(
-        "base_branch_watch.core.pr_status.GH", "/usr/local/bin/gh"
-    ), patch(
-        "base_branch_watch.core.pr_status.subprocess.run", return_value=view_result
-    ), patch(
-        "base_branch_watch.core.pr_status.rate_limit_reset_text", return_value=None
-    ):
-        status = pr_status.check_pr("/tmp/repo")
+    status = reader.check_pr("/tmp/repo")
 
     assert status.kind == PrStatusKind.RATE_LIMITED
     assert status.retry_at is None
 
 
-def test_rate_limit_reset_text_formats_epoch_to_hh_mm():
-    from base_branch_watch.core import pr_status
+# -- rate_limit_reset_text ----------------------------------------------------
 
-    # A known epoch — assert against the same local-time formatting the
-    # implementation uses, rather than hardcoding a timezone-dependent string.
+
+def test_rate_limit_reset_text_formats_epoch_to_hh_mm():
+    # Same local-time formatting as the implementation, so no timezone-dependent literal.
     reset_epoch = 1784097752
     expected = datetime.datetime.fromtimestamp(reset_epoch).strftime("%H:%M")
-
     resources = {"graphql": {"limit": 5000, "remaining": 4989, "reset": reset_epoch, "used": 11}}
-    rate_limit_result = _completed(0, stdout=json.dumps({"resources": resources}))
+    reader = _reader({RATE_LIMIT: ok(json.dumps({"resources": resources}))})
 
-    with patch(
-        "base_branch_watch.core.pr_status.GH", "/usr/local/bin/gh"
-    ), patch(
-        "base_branch_watch.core.pr_status.subprocess.run", return_value=rate_limit_result
-    ):
-        result = pr_status.rate_limit_reset_text()
-
-    assert result == expected
+    assert reader.rate_limit_reset_text() == expected
 
 
 def test_rate_limit_reset_text_returns_none_on_failure():
-    from base_branch_watch.core import pr_status
+    reader = _reader({RATE_LIMIT: broken("gh api rate_limit timed out after 10s")})
 
-    with patch(
-        "base_branch_watch.core.pr_status.GH", "/usr/local/bin/gh"
-    ), patch(
-        "base_branch_watch.core.pr_status.subprocess.run",
-        side_effect=subprocess.TimeoutExpired(cmd="gh", timeout=10),
-    ):
-        result = pr_status.rate_limit_reset_text()
-
-    assert result is None
+    assert reader.rate_limit_reset_text() is None
 
 
-# -- CR-01 regression (code review, Phase 04): `gh pr view`'s primary call
-# keeps resolving to a MERGED/CLOSED PR directly (branch not deleted) --
-# check_pr must detect this itself, not rely solely on final_state(). --------
+def test_rate_limit_reset_text_returns_none_when_gh_not_installed():
+    assert _reader({}, installed=False).rate_limit_reset_text() is None
+
+
+def test_rate_limit_reset_text_returns_none_on_unexpected_payload():
+    assert _reader({RATE_LIMIT: ok('{"resources": {}}')}).rate_limit_reset_text() is None
+
+
+# -- CR-01: `gh pr view` keeps resolving to a MERGED/CLOSED PR directly -------
 
 
 def test_check_pr_open_call_returns_merged_kind_directly():
-    from base_branch_watch.core import pr_status
+    status = _reader({VIEW: ok('{"number":42,"state":"MERGED"}')}).check_pr("/tmp/repo")
 
-    view_result = _completed(0, stdout='{"number":42,"state":"MERGED"}')
-
-    with patch(
-        "base_branch_watch.core.pr_status.GH", "/usr/local/bin/gh"
-    ), patch(
-        "base_branch_watch.core.pr_status.subprocess.run", return_value=view_result
-    ):
-        status = pr_status.check_pr("/tmp/repo")
-
-    assert status.kind == PrStatusKind.MERGED
-    assert status.number == 42
+    assert (status.kind, status.number) == (PrStatusKind.MERGED, 42)
 
 
 def test_check_pr_open_call_returns_closed_kind_directly():
-    from base_branch_watch.core import pr_status
+    status = _reader({VIEW: ok('{"number":7,"state":"CLOSED"}')}).check_pr("/tmp/repo")
 
-    view_result = _completed(0, stdout='{"number":7,"state":"CLOSED"}')
-
-    with patch(
-        "base_branch_watch.core.pr_status.GH", "/usr/local/bin/gh"
-    ), patch(
-        "base_branch_watch.core.pr_status.subprocess.run", return_value=view_result
-    ):
-        status = pr_status.check_pr("/tmp/repo")
-
-    assert status.kind == PrStatusKind.CLOSED
-    assert status.number == 7
+    assert (status.kind, status.number) == (PrStatusKind.CLOSED, 7)
 
 
-# -- WR-02 regression: _checks_counts guards non-dict bucket elements --------
+# -- WR-02: non-dict bucket elements ------------------------------------------
 
 
 def test_check_pr_open_with_non_dict_bucket_elements_does_not_raise():
-    from base_branch_watch.core import pr_status
+    reader = _reader({VIEW: ok('{"number":1,"state":"OPEN"}'), CHECKS: ok('["pass", "fail"]')})
 
-    view_result = _completed(0, stdout='{"number":1,"state":"OPEN"}')
-    # Malformed/unexpected `gh pr checks` output: a list of strings, not dicts.
-    checks_result = _completed(0, stdout='["pass", "fail"]')
-
-    with patch(
-        "base_branch_watch.core.pr_status.GH", "/usr/local/bin/gh"
-    ), patch(
-        "base_branch_watch.core.pr_status.subprocess.run",
-        side_effect=[view_result, checks_result],
-    ):
-        status = pr_status.check_pr("/tmp/repo")
+    status = reader.check_pr("/tmp/repo")
 
     assert status.kind == PrStatusKind.OPEN
     assert status.checks_pass == 0
     assert status.checks_fail == 0
 
 
-# -- WR-04 regression: checks-fetch failure is distinguishable from a
-# genuinely empty checks list. --------------------------------------------
+# -- WR-04: checks-fetch failure is distinguishable from zero checks ----------
 
 
 def test_check_pr_open_with_checks_fetch_timeout_sets_unavailable_sentinel():
-    from base_branch_watch.core import pr_status
+    reader = _reader(
+        {
+            VIEW: ok('{"number":1,"state":"OPEN"}'),
+            CHECKS: broken("gh pr checks timed out after 15s"),
+        }
+    )
 
-    view_result = _completed(0, stdout='{"number":1,"state":"OPEN"}')
-
-    def run_side_effect(*args, **kwargs):
-        cmd = args[0] if args else kwargs.get("args")
-        if "checks" in cmd:
-            raise subprocess.TimeoutExpired(cmd="gh", timeout=15)
-        return view_result
-
-    with patch(
-        "base_branch_watch.core.pr_status.GH", "/usr/local/bin/gh"
-    ), patch(
-        "base_branch_watch.core.pr_status.subprocess.run", side_effect=run_side_effect
-    ):
-        status = pr_status.check_pr("/tmp/repo")
+    status = reader.check_pr("/tmp/repo")
 
     assert status.kind == PrStatusKind.OPEN
     assert status.checks_total == -1
 
 
 def test_check_pr_open_with_zero_checks_configured_reports_zero_not_unavailable():
-    from base_branch_watch.core import pr_status
-
-    view_result = _completed(0, stdout='{"number":1,"state":"OPEN"}')
-    checks_result = _completed(
-        1, stdout="", stderr="no checks reported on the 'main' branch\n"
+    reader = _reader(
+        {
+            VIEW: ok('{"number":1,"state":"OPEN"}'),
+            CHECKS: fail(1, "no checks reported on the 'main' branch\n"),
+        }
     )
 
-    with patch(
-        "base_branch_watch.core.pr_status.GH", "/usr/local/bin/gh"
-    ), patch(
-        "base_branch_watch.core.pr_status.subprocess.run",
-        side_effect=[view_result, checks_result],
-    ):
-        status = pr_status.check_pr("/tmp/repo")
+    status = reader.check_pr("/tmp/repo")
 
     assert status.kind == PrStatusKind.OPEN
-    assert status.checks_total == 0
-    assert status.checks_pass == 0
-    assert status.checks_fail == 0
+    assert (status.checks_total, status.checks_pass, status.checks_fail) == (0, 0, 0)
     assert status.checks_pending == 0
 
 
-# -- Task 3 (Plan 02): final_state() — D-03 merged/closed one-cycle probe --
+# -- final_state: D-03 merged/closed one-cycle probe --------------------------
 
 
 def test_final_state_maps_merged():
-    from base_branch_watch.core import pr_status
+    reader = _reader({("pr", "view", "42"): ok('{"state":"MERGED"}')})
 
-    view_result = _completed(0, stdout='{"state":"MERGED"}')
-    with patch(
-        "base_branch_watch.core.pr_status.GH", "/usr/local/bin/gh"
-    ), patch(
-        "base_branch_watch.core.pr_status.subprocess.run", return_value=view_result
-    ):
-        kind = pr_status.final_state("/tmp/repo", 42)
-
-    assert kind == PrStatusKind.MERGED
+    assert reader.final_state("/tmp/repo", 42) == PrStatusKind.MERGED
 
 
 def test_final_state_maps_closed():
-    from base_branch_watch.core import pr_status
+    reader = _reader({("pr", "view", "42"): ok('{"state":"CLOSED"}')})
 
-    view_result = _completed(0, stdout='{"state":"CLOSED"}')
-    with patch(
-        "base_branch_watch.core.pr_status.GH", "/usr/local/bin/gh"
-    ), patch(
-        "base_branch_watch.core.pr_status.subprocess.run", return_value=view_result
-    ):
-        kind = pr_status.final_state("/tmp/repo", 42)
-
-    assert kind == PrStatusKind.CLOSED
+    assert reader.final_state("/tmp/repo", 42) == PrStatusKind.CLOSED
 
 
 def test_final_state_maps_other_state_to_no_pr():
-    from base_branch_watch.core import pr_status
+    reader = _reader({("pr", "view", "42"): ok('{"state":"OPEN"}')})
 
-    view_result = _completed(0, stdout='{"state":"OPEN"}')
-    with patch(
-        "base_branch_watch.core.pr_status.GH", "/usr/local/bin/gh"
-    ), patch(
-        "base_branch_watch.core.pr_status.subprocess.run", return_value=view_result
-    ):
-        kind = pr_status.final_state("/tmp/repo", 42)
-
-    assert kind == PrStatusKind.NO_PR
+    assert reader.final_state("/tmp/repo", 42) == PrStatusKind.NO_PR
 
 
 def test_final_state_never_raises_on_failure_maps_to_no_pr():
-    from base_branch_watch.core import pr_status
+    reader = _reader({("pr", "view", "42"): broken("gh pr view timed out after 15s")})
 
-    with patch(
-        "base_branch_watch.core.pr_status.GH", "/usr/local/bin/gh"
-    ), patch(
-        "base_branch_watch.core.pr_status.subprocess.run",
-        side_effect=subprocess.TimeoutExpired(cmd="gh", timeout=15),
-    ):
-        kind = pr_status.final_state("/tmp/repo", 42)
-
-    assert kind == PrStatusKind.NO_PR
+    assert reader.final_state("/tmp/repo", 42) == PrStatusKind.NO_PR
 
 
 def test_final_state_nonzero_exit_maps_to_no_pr():
-    from base_branch_watch.core import pr_status
+    reader = _reader({("pr", "view", "42"): fail(1, "no pull request found")})
 
-    view_result = _completed(1, stderr="no pull request found")
-    with patch(
-        "base_branch_watch.core.pr_status.GH", "/usr/local/bin/gh"
-    ), patch(
-        "base_branch_watch.core.pr_status.subprocess.run", return_value=view_result
-    ):
-        kind = pr_status.final_state("/tmp/repo", 42)
-
-    assert kind == PrStatusKind.NO_PR
+    assert reader.final_state("/tmp/repo", 42) == PrStatusKind.NO_PR
 
 
-def test_pr_status_module_is_pure_no_rumps_or_appkit_import():
-    """ARCH-01 — mirrors tests/runner/test_batch.py's equivalent guard. Checks
-    actual import statements, not docstring mentions (the module docstring
-    legitimately documents "no rumps/AppKit import, ever", mirroring
-    core/git_ops.py's own docstring convention)."""
-    import base_branch_watch.core.pr_status as pr_status_module
+def test_final_state_not_installed_maps_to_no_pr():
+    assert _reader({}, installed=False).final_state("/tmp/repo", 42) == PrStatusKind.NO_PR
 
-    src = open(pr_status_module.__file__).read()
-    assert "import rumps" not in src
-    assert "from rumps" not in src
-    assert "import AppKit" not in src
-    assert "from AppKit" not in src
+
+def test_final_state_unparseable_json_maps_to_no_pr():
+    assert _reader({("pr", "view", "42"): ok("nope")}).final_state("/tmp/repo", 42) == (
+        PrStatusKind.NO_PR
+    )
+
+
+# -- module surface ------------------------------------------------------------
+
+
+def test_module_level_wrappers_delegate_to_a_default_reader():
+    assert callable(pr_status.check_pr)
+    assert callable(pr_status.final_state)
+
+
+def test_pr_status_modules_are_pure_no_rumps_or_appkit_import():
+    """ARCH-01: checks actual import statements, not docstring mentions."""
+    import base_branch_watch.core.gh_client as gh_client_module
+
+    for module in (pr_status, gh_client_module):
+        src = open(module.__file__).read()
+        assert "import rumps" not in src
+        assert "from rumps" not in src
+        assert "import AppKit" not in src
+        assert "from AppKit" not in src
