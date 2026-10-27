@@ -15,8 +15,10 @@ raise, so one bad repo can't abort a backfill loop or the add-repo flow.
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from importlib import resources
 from pathlib import Path
@@ -47,7 +49,7 @@ def install(repo_path: str, python_bin: str | None = None) -> HookResult:
     hook_path = _hook_path(repo_path)
     if isinstance(hook_path, HookResult):
         return hook_path
-    if hook_path.is_file() and not _is_bbwatch_hook(hook_path):
+    if _is_file(hook_path) and not _is_bbwatch_hook(hook_path):
         return HookResult(
             ok=False,
             message=(
@@ -73,7 +75,7 @@ def uninstall(repo_path: str) -> HookResult:
     hook_path = _hook_path(repo_path)
     if isinstance(hook_path, HookResult):
         return hook_path
-    if not hook_path.is_file():
+    if not _is_file(hook_path):
         return HookResult(
             ok=True, message=f"No pre-push hook found at {hook_path} (nothing to remove)."
         )
@@ -96,7 +98,15 @@ def _hook_path(repo_path: str) -> Path | HookResult:
             ok=False,
             message=f"'{repo_path}' does not look like a git repository (rev-parse failed).",
         )
-    return Path(hooks_dir) / "pre-push"
+    return Path(os.path.abspath(hooks_dir)) / "pre-push"
+
+
+def _is_file(path: Path) -> bool:
+    """Path.is_file() raises PermissionError on an unreadable parent; `[ -f ]` did not."""
+    try:
+        return path.is_file()
+    except OSError:
+        return False
 
 
 def _is_bbwatch_hook(hook_path: Path) -> bool:
@@ -121,11 +131,26 @@ def _resolve_interpreter(python_bin: str | None) -> str | HookResult:
         return HookResult(
             ok=False, message=f"'{name}' is not an absolute path and was not found on PATH."
         )
-    return found
+    return os.path.abspath(found)
 
 
 def _check_importable(python_bin: str) -> HookResult | None:
-    failure = HookResult(
+    try:
+        result = subprocess.run(
+            [python_bin, "-c", "import base_branch_watch"],
+            capture_output=True,
+            timeout=_IMPORT_CHECK_TIMEOUT_SECONDS,
+            # Neutral cwd: `python -c` puts cwd on sys.path, which would let a checkout
+            # directory mask an interpreter that cannot import the package on its own.
+            cwd=tempfile.gettempdir(),
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return _cannot_import(python_bin)
+    return None if result.returncode == 0 else _cannot_import(python_bin)
+
+
+def _cannot_import(python_bin: str) -> HookResult:
+    return HookResult(
         ok=False,
         message=(
             f"{python_bin} cannot import base_branch_watch. Install the package into this "
@@ -133,12 +158,3 @@ def _check_importable(python_bin: str) -> HookResult | None:
             "interpreter's venv active), or pass the correct interpreter path."
         ),
     )
-    try:
-        result = subprocess.run(
-            [python_bin, "-c", "import base_branch_watch"],
-            capture_output=True,
-            timeout=_IMPORT_CHECK_TIMEOUT_SECONDS,
-        )
-    except (subprocess.TimeoutExpired, OSError):
-        return failure
-    return None if result.returncode == 0 else failure

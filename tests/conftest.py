@@ -13,6 +13,19 @@ import pytest
 
 GIT = "/usr/bin/git"
 
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+@pytest.fixture(autouse=True)
+def _package_importable_from_any_cwd(monkeypatch):
+    """Subprocess interpreters must import base_branch_watch without leaning on cwd.
+
+    hook_install's import check runs from a neutral directory. A dev venv whose editable
+    .pth carries macOS's `hidden` flag (Python ignores it) would otherwise only import the
+    package from the repo root.
+    """
+    monkeypatch.setenv("PYTHONPATH", str(REPO_ROOT))
+
 
 def _run(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
     result = subprocess.run(
