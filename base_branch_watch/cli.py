@@ -1,19 +1,18 @@
-"""Thin argparse porcelain over scripts/install-launchagent.sh and
-scripts/install-pre-push-hook.sh.
+"""Thin argparse porcelain over scripts/install-launchagent.sh and core.hook_install.
 
 Exposes `bbwatch install-agent` / `bbwatch uninstall-agent` (LaunchAgent) and
 `bbwatch install-hook` / `bbwatch uninstall-hook` (pre-push conflict gate) so
-users don't have to remember either script's path — same underlying
-install/uninstall logic, no duplicated shell logic here (ARCHITECTURE.md's
-cli.py role: a third porcelain over the same plumbing, not a second copy of
-it).
+users don't have to remember the script's path or the hook layout - same
+underlying install/uninstall logic as the menu-bar app, no duplicated logic
+here (ARCHITECTURE.md's cli.py role: a porcelain over the same plumbing, not
+a second copy of it).
 
-NOTE (WR-03): SCRIPT_PATH/HOOK_SCRIPT_PATH are resolved relative to this
-installed package's location, which only has a sibling `scripts/` directory
-in an editable/source install (`pip install -e .` — see INSTALL.md's
-Prerequisites). A non-editable install (`pip install .` from a copied
-sdist/wheel) will not have `scripts/` alongside it; `_run_script` below fails
-loudly with a message explaining this rather than silently misbehaving.
+NOTE (WR-03): SCRIPT_PATH is resolved relative to this installed package's
+location, which only has a sibling `scripts/` directory in an editable/source
+install (`pip install -e .` - see INSTALL.md's Prerequisites). A non-editable
+install (`pip install .` from a copied sdist/wheel) will not have `scripts/`
+alongside it; `_run_script` below fails loudly with a message explaining this
+rather than silently misbehaving. The hook commands do not need `scripts/`.
 """
 
 from __future__ import annotations
@@ -23,15 +22,16 @@ import subprocess
 import sys
 from pathlib import Path
 
+from base_branch_watch.core import hook_install
+
 SCRIPT_PATH = Path(__file__).resolve().parent.parent / "scripts" / "install-launchagent.sh"
-HOOK_SCRIPT_PATH = Path(__file__).resolve().parent.parent / "scripts" / "install-pre-push-hook.sh"
 
 
-def _run_script(args: list[str], script_path: Path = SCRIPT_PATH) -> int:
-    if not script_path.exists():
+def _run_script(args: list[str]) -> int:
+    if not SCRIPT_PATH.exists():
         print(
-            f"ERROR: install script not found at {script_path}\n"
-            "`bbwatch install-agent`/`uninstall-agent`/`install-hook`/`uninstall-hook` "
+            f"ERROR: install script not found at {SCRIPT_PATH}\n"
+            "`bbwatch install-agent`/`uninstall-agent` "
             "require an editable/source install (`pip install -e .` from a repo "
             "checkout) so `scripts/` ships alongside the installed package — a "
             "non-editable install does not include it. Run the script directly from "
@@ -39,8 +39,13 @@ def _run_script(args: list[str], script_path: Path = SCRIPT_PATH) -> int:
             file=sys.stderr,
         )
         return 1
-    result = subprocess.run(["/bin/sh", str(script_path), *args])
+    result = subprocess.run(["/bin/sh", str(SCRIPT_PATH), *args])
     return result.returncode
+
+
+def _report(result: hook_install.HookResult) -> int:
+    print(result.message, file=sys.stdout if result.ok else sys.stderr)
+    return 0 if result.ok else 1
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -92,10 +97,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "uninstall-agent":
         return _run_script(["--uninstall"])
     if args.command == "install-hook":
-        script_args = [args.repo_path] + ([args.python_path] if args.python_path else [])
-        return _run_script(script_args, HOOK_SCRIPT_PATH)
+        return _report(hook_install.install(args.repo_path, args.python_path))
     if args.command == "uninstall-hook":
-        return _run_script(["--uninstall", args.repo_path], HOOK_SCRIPT_PATH)
+        return _report(hook_install.uninstall(args.repo_path))
 
     parser.print_help()
     return 1

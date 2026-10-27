@@ -18,11 +18,11 @@ import time
 import rumps
 from AppKit import NSAlert, NSApplication, NSOpenPanel, NSWindowCollectionBehaviorCanJoinAllSpaces
 
-from base_branch_watch import cli
 from base_branch_watch.app import menu_builder
 from base_branch_watch.core import (
     config,
     git_ops,
+    hook_install,
     log,
     notify_policy,
     self_update,
@@ -377,47 +377,20 @@ class BaseBranchWatchApp(rumps.App):
     # -- pre-push hook install/uninstall (HOOK-01, D-01/D-03/D-04) -----------
 
     def _install_hook_for(self, repo_path: str) -> None:
-        """Trigger-only: the install logic itself lives entirely in
-        scripts/install-pre-push-hook.sh (via cli.HOOK_SCRIPT_PATH), reused
-        as-is -- never duplicated here (Architectural Responsibility Map).
-        Bakes sys.executable, the running app's own interpreter, which is
-        guaranteed to import base_branch_watch. Never raises (same
-        never-crashes discipline as core/git_ops.py) so a single bad repo
-        can't abort the startup backfill loop or the add-repo flow
-        (T-03-12)."""
-        try:
-            result = subprocess.run(
-                ["/bin/sh", str(cli.HOOK_SCRIPT_PATH), repo_path, sys.executable],
-                timeout=15,
-                capture_output=True,
-                text=True,
-            )
-        except (subprocess.TimeoutExpired, OSError) as exc:
-            log.append(f"[FAIL] pre-push hook install failed for {repo_path}: {exc!r}")
-            return
-        if result.returncode != 0:
-            log.append(
-                f"[FAIL] pre-push hook install failed for {repo_path}: "
-                f"{result.stderr.strip() or 'exit ' + str(result.returncode)}"
-            )
+        """Trigger-only: the install logic lives in core.hook_install. Bakes
+        sys.executable, the running app's own interpreter, which is
+        guaranteed to import base_branch_watch. Never raises (hook_install
+        returns a result) so a single bad repo can't abort the startup
+        backfill loop or the add-repo flow (T-03-12)."""
+        result = hook_install.install(repo_path, sys.executable)
+        if not result.ok:
+            log.append(f"[FAIL] pre-push hook install failed for {repo_path}: {result.message}")
 
     def _uninstall_hook_for(self, repo_path: str) -> None:
         """Symmetric with _install_hook_for (D-04); never raises."""
-        try:
-            result = subprocess.run(
-                ["/bin/sh", str(cli.HOOK_SCRIPT_PATH), "--uninstall", repo_path],
-                timeout=15,
-                capture_output=True,
-                text=True,
-            )
-        except (subprocess.TimeoutExpired, OSError) as exc:
-            log.append(f"[FAIL] pre-push hook uninstall failed for {repo_path}: {exc!r}")
-            return
-        if result.returncode != 0:
-            log.append(
-                f"[FAIL] pre-push hook uninstall failed for {repo_path}: "
-                f"{result.stderr.strip() or 'exit ' + str(result.returncode)}"
-            )
+        result = hook_install.uninstall(repo_path)
+        if not result.ok:
+            log.append(f"[FAIL] pre-push hook uninstall failed for {repo_path}: {result.message}")
 
     def _backfill_hooks(self) -> None:
         """Startup backfill: install the pre-push hook into every already-

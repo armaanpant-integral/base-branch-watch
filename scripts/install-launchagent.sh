@@ -81,9 +81,8 @@ install() {
     # `gh`, resolved via shutil.which at import in pr_status.py) of a real
     # PATH, producing false "not installed" results. Bake the installing
     # shell's PATH into the plist so launchd's spawned process sees the same
-    # PATH the installer had. Escape sed metacharacters (&, #, \) exactly as
-    # install-pre-push-hook.sh escapes python_bin (WR-03) - the "#" matters
-    # because "#" is this script's sed substitution delimiter. XML-unsafe
+    # PATH the installer had. Escape sed metacharacters (&, #, \) (WR-03) - the "#"
+    # matters because "#" is this script's sed substitution delimiter. XML-unsafe
     # characters (<, >, &) inside a PATH component are intentionally left
     # unescaped: they are pathological on a dev machine and out of scope for
     # this installer.
