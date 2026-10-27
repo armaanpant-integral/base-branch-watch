@@ -118,7 +118,7 @@ def test_render_multi_base_repo_builds_real_submenu_not_flat_row(app):
         assert child.callback is not None, "each per-base child row should be clickable"
 
     assert child_items["main"].title == "🟢 main"
-    assert child_items["release"].title == "🔴 release: diverged — 4 behind, 1 ahead"
+    assert child_items["release"].title == "🔴 release: diverged - 4 behind, 1 ahead"
 
 
 def test_render_multi_base_repo_mutates_children_in_place_on_second_render(app):
@@ -224,14 +224,14 @@ def test_render_conflict_risk_multi_base_repo_nests_path_children(app):
     # falls back to a title-derived key (see _child_key).
     assert set(child_items.keys()) == {
         "main",
-        "⚠️ release: conflict risk — 2 file(s) overlap",
+        "⚠️ release: conflict risk - 2 file(s) overlap",
     }
 
     main_child = child_items["main"]
     assert main_child.callback is not None
     assert len(main_child) == 0
 
-    release_child = child_items["⚠️ release: conflict risk — 2 file(s) overlap"]
+    release_child = child_items["⚠️ release: conflict risk - 2 file(s) overlap"]
     assert release_child.callback is None, "conflict-risk base child has no callback of its own"
     assert len(release_child) == 2
     assert {item.title for item in release_child.values()} == {"a.py", "b.py"}
@@ -270,7 +270,7 @@ def test_repo_click_handler_diverged_base_shows_diverged_detail(app, monkeypatch
 
     app._repo_click_handler(status.repo_path)(None)
 
-    assert "Diverged" in captured["message"]
+    assert "diverged" in captured["message"]
     assert "3 behind" in captured["message"]
     assert "2 ahead" in captured["message"]
 
@@ -284,7 +284,7 @@ def test_repo_click_handler_multi_base_uses_worst_branch_not_first(app, monkeypa
 
     app._repo_click_handler(status.repo_path)(None)
 
-    assert "Diverged" in captured["message"]
+    assert "diverged" in captured["message"]
     assert captured["message"] != "Up to date."
 
 
@@ -380,7 +380,7 @@ def test_child_click_handler_reports_specific_base_status(app, monkeypatch):
     assert captured["message"] == "Up to date."
 
     app._child_click_handler(status.repo_path, "release")(None)
-    assert "Diverged" in captured["message"]
+    assert "diverged" in captured["message"]
     assert "4 behind" in captured["message"]
     assert "1 ahead" in captured["message"]
 
@@ -648,8 +648,8 @@ def test_check_all_renders_pr_row_from_fake_batch_result_without_raising(app, mo
 def test_log_status_line_check_failed_base_is_labelled_fail():
     line = poll_cycle.status_log_line(_check_failed_single_base_status(name="repo-h"))
 
-    assert line.startswith("[FAIL] repo-h: ")
-    assert "(main)" in line
+    assert line.startswith("[FAIL] repo-h: check failed - ")
+    assert line.endswith("(main)")
 
 
 def test_log_status_line_non_failed_bases_stay_ok():
@@ -830,3 +830,38 @@ def test_check_all_failed_digest_send_does_not_mark_state_notified(gating_app):
     gating_app.check_all(None)
 
     assert gating_app._notifier.send_digest.call_count == 2
+
+
+def test_repo_click_handler_conflict_risk_names_the_conflict(app, monkeypatch):
+    status = _conflict_risk_single_base_status("myrepo", paths=("a.py", "b.py"))
+    app.statuses = {status.repo_path: status}
+    captured = _capture_alert(monkeypatch)
+
+    app._repo_click_handler(status.repo_path)(None)
+
+    assert captured["message"] == "conflict risk - 2 file(s) overlap (main)"
+
+
+def test_log_status_line_conflict_risk_names_the_conflict():
+    status = _conflict_risk_single_base_status("repo-c", paths=("a.py",))
+
+    assert (
+        poll_cycle.status_log_line(status)
+        == "[OK] repo-c: conflict risk - 1 file(s) overlap (main)"
+    )
+
+
+def test_repo_click_handler_up_to_date_with_unpushed_shows_the_unpushed_count(app, monkeypatch):
+    status = _status(
+        "myrepo",
+        unpushed=2,
+        branch_statuses=[
+            BranchStatus(base="main", behind=0, ahead_of_base=0, kind=StatusKind.UP_TO_DATE)
+        ],
+    )
+    app.statuses = {status.repo_path: status}
+    captured = _capture_alert(monkeypatch)
+
+    app._repo_click_handler(status.repo_path)(None)
+
+    assert captured["message"] == "2 unpushed"

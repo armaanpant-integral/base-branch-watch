@@ -72,7 +72,7 @@ def test_send_digest_pluralizes_title_and_joins_body_by_newline():
     script = mock_run.call_args.args[0][2]
     assert '"3 repos need attention"' in script
     assert "a: 3 behind (main)" in script
-    assert "b: diverged — 3 behind, 2 ahead (main)" in script
+    assert "b: diverged - 3 behind, 2 ahead (main)" in script
     assert "c: 2 unpushed" in script
 
 
@@ -119,3 +119,27 @@ def test_send_message_invokes_osascript_once_with_escaped_title_and_body():
     script = args[2]
     assert 'with title "Update \\"now\\""' in script
     assert 'display notification "3 new commits"' in script
+
+
+def test_send_digest_describes_a_conflict_risk_repo_as_conflict_risk():
+    status = RepoStatus(
+        repo_path="/repos/x",
+        name="x",
+        current_branch="feature",
+        unpushed=0,
+        branch_statuses=[
+            BranchStatus(
+                base="main",
+                behind=1,
+                ahead_of_base=0,
+                kind=StatusKind.CONFLICT_RISK,
+                conflict_paths=["a.py", "b.py"],
+            )
+        ],
+    )
+    with patch("base_branch_watch.notify.osascript_notifier.subprocess.run") as mock_run:
+        OsascriptNotifier().send_digest([status])
+
+    script = mock_run.call_args.args[0][2]
+    assert "x: conflict risk - 2 file(s) overlap (main)" in script
+    assert "up to date" not in script

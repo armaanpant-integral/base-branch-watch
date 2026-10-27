@@ -13,7 +13,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from base_branch_watch.core import git_ops, notify_policy, pr_status
+from base_branch_watch.core import git_ops, notify_policy, pr_status, status_text
 from base_branch_watch.core.models import (
     PrStatus,
     PrStatusKind,
@@ -46,18 +46,8 @@ def status_log_line(status: RepoStatus) -> str:
     """One log line per repo; CHECK_FAILED is labelled FAIL, everything else OK."""
     if status.failure_reason is not None:
         return f"[FAIL] {status.name}: {status.failure_reason}"
-    bs = status.worst_branch_status
-    if bs is None or bs.kind == StatusKind.UP_TO_DATE:
-        suffix = "up to date" if status.unpushed == 0 else f"{status.unpushed} unpushed"
-    elif bs.kind == StatusKind.DIVERGED:
-        suffix = f"diverged - {bs.behind} behind, {bs.ahead_of_base} ahead ({bs.base})"
-    elif bs.kind == StatusKind.CHECK_FAILED:
-        suffix = f"check failed - {bs.reason or 'unknown error'} ({bs.base})"
-    else:
-        suffix = f"{bs.behind} behind ({bs.base})"
-    is_check_failed = bs is not None and bs.kind == StatusKind.CHECK_FAILED
-    level = "FAIL" if is_check_failed else "OK"
-    return f"[{level}] {status.name}: {suffix}"
+    level = "FAIL" if status.worst_kind == StatusKind.CHECK_FAILED else "OK"
+    return f"[{level}] {status.name}: {status_text.repo_summary(status)}"
 
 
 class PollCycle:
