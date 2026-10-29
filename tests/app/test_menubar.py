@@ -21,6 +21,8 @@ from base_branch_watch.core.models import (
     PrStatusKind,
     RepoConfig,
     RepoStatus,
+    StaleBranch,
+    StaleKind,
     StatusKind,
 )
 from base_branch_watch.runner import poll_cycle
@@ -865,3 +867,24 @@ def test_repo_click_handler_up_to_date_with_unpushed_shows_the_unpushed_count(ap
     app._repo_click_handler(status.repo_path)(None)
 
     assert captured["message"] == "2 unpushed"
+
+
+def test_check_all_renders_a_stale_branch_row_with_a_child_per_branch(app):
+    status = _status(
+        "myrepo",
+        branch_statuses=[
+            BranchStatus(base="main", behind=0, ahead_of_base=0, kind=StatusKind.UP_TO_DATE)
+        ],
+    )
+    app.cfg.repos = [RepoConfig(repo_path=status.repo_path, base_branches=["main"])]
+    stale = {status.repo_path: [StaleBranch(name="feat/x", kind=StaleKind.GONE_MERGED)]}
+
+    with (
+        patch.object(app._cycle, "_check_all", return_value=([status], {})),
+        patch.object(app._cycle, "_check_stale", return_value=stale),
+    ):
+        app.check_all(None)
+
+    item = app._stale_items[status.repo_path]
+    assert item.title == "🧹 myrepo: 1 stale branch"
+    assert [child.title for child in item.values()] == ["feat/x - remote deleted, merged"]

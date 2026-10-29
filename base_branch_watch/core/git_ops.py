@@ -95,6 +95,23 @@ class FetchResult:
     error: str | None = None
 
 
+@dataclass
+class LocalBranch:
+    name: str
+    sha: str
+    upstream_remote: str | None
+    upstream_ref: str | None
+    """The branch's ref on its upstream remote, e.g. `refs/heads/feat/x`."""
+    worktree_path: str | None
+    """Set when the branch is checked out in a worktree (the main one or a linked one)."""
+
+
+_LOCAL_BRANCH_FORMAT = (
+    "%(refname:short)%00%(objectname)%00%(upstream:remotename)%00"
+    "%(upstream:remoteref)%00%(worktreepath)"
+)
+
+
 def _run_git(
     repo_path: str, args: list[str], timeout: int, *, text: bool = True
 ) -> subprocess.CompletedProcess:
@@ -133,6 +150,42 @@ def detect_default_branch(repo_path: str, timeout: int = 10) -> str | None:
                 return ref[len("refs/heads/") :]
             return ref
     return None
+
+
+def remote_heads(repo_path: str, timeout: int = 15) -> dict[str, str]:
+    """`git ls-remote --heads origin` as {branch name: sha}. Read-only."""
+    result = _run_git(repo_path, ["ls-remote", "--heads", "origin"], timeout)
+    heads: dict[str, str] = {}
+    for line in result.stdout.splitlines():
+        sha, _, ref = line.partition("\t")
+        heads[ref.removeprefix("refs/heads/")] = sha
+    return heads
+
+
+def local_branches(repo_path: str, timeout: int = 10) -> list[LocalBranch]:
+    """Every local branch with its upstream and checked-out worktree. Read-only."""
+    result = _run_git(
+        repo_path, ["for-each-ref", f"--format={_LOCAL_BRANCH_FORMAT}", "refs/heads"], timeout
+    )
+    branches = []
+    for line in result.stdout.splitlines():
+        name, sha, remote, remote_ref, worktree = line.split("\x00")
+        branches.append(
+            LocalBranch(
+                name=name,
+                sha=sha,
+                upstream_remote=remote or None,
+                upstream_ref=remote_ref or None,
+                worktree_path=worktree or None,
+            )
+        )
+    return branches
+
+
+def is_ancestor(repo_path: str, ancestor: str, descendant: str, timeout: int = 10) -> bool:
+    """True when every commit of `ancestor` is reachable from `descendant`."""
+    result = _run_git(repo_path, ["merge-base", "--is-ancestor", ancestor, descendant], timeout)
+    return result.returncode == 0
 
 
 def _remove_dataless_fetch_head(repo_path: str) -> None:

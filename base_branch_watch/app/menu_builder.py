@@ -17,6 +17,7 @@ from base_branch_watch.core.models import (
     PrStatusKind,
     RepoStatus,
     Severity,
+    StaleBranch,
     StatusKind,
 )
 
@@ -272,6 +273,25 @@ def _pr_row(pr_status: PrStatus, repo_name: str) -> MenuItemSpec:
     reason = _truncate(pr_status.reason or "unknown error", PR_REASON_CAP)
     return MenuItemSpec(
         title=f"⚠️ {repo_name}: PR status unavailable — {reason}", callback_key=None
+    )
+
+
+def stale_row(branches: list[StaleBranch], repo_name: str) -> MenuItemSpec | None:
+    """The informational stale-branch row for one repo, expanding into one child per branch.
+
+    Like the PR row it uses its own glyph and never touches the git-status severity.
+    None when nothing is stale, so the app shows no row at all.
+    """
+    if not branches:
+        return None
+    children = [
+        MenuItemSpec(title=f"{branch.name} - remote deleted, merged", callback_key=None)
+        for branch in branches
+    ]
+    return MenuItemSpec(
+        title=f"🧹 {repo_name}: {len(branches)} stale branch{'' if len(branches) == 1 else 'es'}",
+        callback_key=None,
+        children=children,
     )
 
 

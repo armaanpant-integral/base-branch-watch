@@ -12,6 +12,8 @@ from base_branch_watch.core.models import (
     PrStatusKind,
     RepoConfig,
     RepoStatus,
+    StaleBranch,
+    StaleKind,
     StatusKind,
 )
 from base_branch_watch.runner import poll_cycle
@@ -55,14 +57,50 @@ class FakeBatch:
         return statuses, fresh
 
 
-def _cycle(batch_fake, final_state=lambda path, number: None, branch="feature") -> PollCycle:
+def _cycle(
+    batch_fake,
+    final_state=lambda path, number: None,
+    branch="feature",
+    check_stale=lambda repos: {},
+) -> PollCycle:
     return PollCycle(
-        check_all=batch_fake, final_state=final_state, current_branch=lambda path: branch
+        check_all=batch_fake,
+        final_state=final_state,
+        current_branch=lambda path: branch,
+        check_stale=check_stale,
     )
 
 
 def _open(number=7) -> PrStatus:
     return PrStatus(kind=PrStatusKind.OPEN, number=number)
+
+
+# -- stale branches -----------------------------------------------------------
+
+
+def test_stale_branches_found_for_a_repo_come_through_on_the_result():
+    repo = _repo()
+    stale = {repo.repo_path: [StaleBranch(name="feat/x", kind=StaleKind.GONE_MERGED)]}
+    cycle = _cycle(FakeBatch({repo.repo_path: _status()}), check_stale=lambda repos: stale)
+
+    result = cycle.run([repo], {}, now=1000.0)
+
+    assert result.stale_statuses == stale
+
+
+def test_a_crashing_stale_check_leaves_git_status_intact_and_is_logged():
+    repo = _repo()
+
+    def exploding(repos):
+        raise RuntimeError("boom")
+
+    cycle = _cycle(FakeBatch({repo.repo_path: _status()}), check_stale=exploding)
+
+    result = cycle.run([repo], {}, now=1000.0)
+
+    assert [s.name for s in result.statuses] == ["repo-a"]
+    assert result.stale_statuses == {}
+    assert any("stale" in line and "boom" in line for line in result.log_lines)
 
 
 # -- PR polling floor ---------------------------------------------------------

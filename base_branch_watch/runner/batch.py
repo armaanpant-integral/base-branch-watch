@@ -17,10 +17,11 @@ other (D-08: PR status must never degrade git-status severity).
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from base_branch_watch.core import base_verdict, pr_status
-from base_branch_watch.core.models import PrStatus, RepoConfig, RepoStatus
+from base_branch_watch.core import base_verdict, pr_status, stale_branches
+from base_branch_watch.core.models import PrStatus, RepoConfig, RepoStatus, StaleBranch
 
 
 def _check_one(
@@ -92,3 +93,29 @@ def check_all(
             if pr is not None:
                 pr_statuses[repo.repo_path] = pr
     return results, pr_statuses
+
+
+def check_stale_all(
+    repos: list[RepoConfig],
+    max_workers: int = 8,
+    check: Callable[[RepoConfig], list[StaleBranch]] = stale_branches.StaleBranchReader().check,
+) -> dict[str, list[StaleBranch]]:
+    """Stale-branch check for every repo, in a second bounded pool.
+
+    This runs AFTER check_all returns (sequentially, not alongside it), so the total
+    number of concurrent git processes never exceeds max_workers. A separate pass,
+    not a third element of check_all's result, keeps check_all's return shape and its
+    many callers unchanged. A repo whose check raises is left out of the result, so
+    one broken repo never hides the others.
+    """
+    if not repos:
+        return {}
+    results: dict[str, list[StaleBranch]] = {}
+    with ThreadPoolExecutor(max_workers=min(max_workers, len(repos))) as pool:
+        futures = {pool.submit(check, repo): repo for repo in repos}
+        for future in as_completed(futures):
+            try:
+                results[futures[future].repo_path] = future.result()
+            except Exception:  # noqa: BLE001 - isolate any per-repo failure
+                continue
+    return results
