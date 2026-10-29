@@ -24,6 +24,7 @@ def classify(
     for branch in branches:
         if (
             branch.upstream_ref is None
+            or branch.upstream_remote != "origin"
             or branch.worktree_path is not None
             or branch.name in watched_bases
         ):
@@ -46,7 +47,7 @@ class StaleBranchReader:
     def __init__(
         self,
         list_branches: Callable[[str], list[LocalBranch]] = git_ops.local_branches,
-        remote_heads: Callable[[str], dict[str, str]] = git_ops.remote_heads,
+        remote_heads: Callable[[str], dict[str, str] | None] = git_ops.remote_heads,
         is_ancestor: Callable[[str, str, str], bool] = git_ops.is_ancestor,
         resolve_ref: Callable[[str, str], str | None] = git_ops.resolve_ref,
     ) -> None:
@@ -55,7 +56,16 @@ class StaleBranchReader:
         self._is_ancestor = is_ancestor
         self._resolve_ref = resolve_ref
 
-    def check(self, repo: RepoConfig) -> list[StaleBranch]:
+    def check(self, repo: RepoConfig) -> list[StaleBranch] | None:
+        """Stale branches of one repo, or None when origin's branches could not be read.
+
+        None is "unknown", deliberately distinct from [] ("nothing stale"): without
+        origin's live branch list there is no way to tell which upstreams are gone.
+        """
+        remote_heads = self._remote_heads(repo.repo_path)
+        if remote_heads is None:
+            return None
+
         def is_merged(branch_sha: str) -> bool:
             return any(
                 self._is_ancestor(repo.repo_path, branch_sha, f"origin/{base}")
@@ -70,7 +80,7 @@ class StaleBranchReader:
 
         return classify(
             self._list_branches(repo.repo_path),
-            self._remote_heads(repo.repo_path),
+            remote_heads,
             is_merged,
             watched_bases=set(repo.base_branches),
             at_base_tip=at_base_tip,

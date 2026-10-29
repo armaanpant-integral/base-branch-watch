@@ -170,6 +170,7 @@ class BaseBranchWatchApp(rumps.App):
                 del self._repo_items[repo_path]
                 self._repo_child_items.pop(repo_path, None)
             self._remove_pr_row(list(self._pr_items.keys()))
+            self._remove_stale_row(list(self._stale_items.keys()))
             if self._empty_item is None:
                 self._empty_item = rumps.MenuItem(menu_builder.EMPTY_STATE_TITLE)
                 self.menu.insert_before(ADD_REPO_TITLE, self._empty_item)
@@ -190,6 +191,7 @@ class BaseBranchWatchApp(rumps.App):
         # cleanup above.
         stale_pr_repos = [rp for rp in self._pr_items if rp not in current_keys]
         self._remove_pr_row(stale_pr_repos)
+        self._remove_stale_row([rp for rp in self._stale_items if rp not in current_keys])
 
         for status, spec in zip(statuses, specs):
             self._render_row(status, spec)
@@ -352,6 +354,13 @@ class BaseBranchWatchApp(rumps.App):
                 self._pr_child_items.pop(repo_path, None)
 
     # -- stale-branch row -----------------------------------------------------
+
+    def _remove_stale_row(self, repo_paths: list[str]) -> None:
+        for repo_path in repo_paths:
+            key = self._stale_item_keys.pop(repo_path, None)
+            if key is not None:
+                del self.menu[key]
+            self._stale_items.pop(repo_path, None)
 
     def _render_stale_row(self, repo_path: str, spec: MenuItemSpec) -> None:
         """Insert or mutate one repo's stale-branch row, placed after its PR row
@@ -752,11 +761,15 @@ class BaseBranchWatchApp(rumps.App):
                     pr_spec = menu_builder._pr_row(pr_status_for_repo, status.name)
                     self._render_pr_row(status.repo_path, pr_spec)
             for status in result.statuses:
-                stale_for_repo = result.stale_statuses.get(status.repo_path)
-                if stale_for_repo is not None:
-                    stale_spec = menu_builder.stale_row(stale_for_repo, status.name)
-                    if stale_spec is not None:
-                        self._render_stale_row(status.repo_path, stale_spec)
+                # A repo missing from stale_statuses could not be checked this cycle:
+                # show no row rather than a stale one.
+                stale_spec = menu_builder.stale_row(
+                    result.stale_statuses.get(status.repo_path, []), status.name
+                )
+                if stale_spec is None:
+                    self._remove_stale_row([status.repo_path])
+                else:
+                    self._render_stale_row(status.repo_path, stale_spec)
             self._maybe_check_for_update()
         except Exception as exc:  # noqa: BLE001 - top-level poll-cycle guard, see CR-04
             # Never let a single bad cycle kill the whole polling loop (the

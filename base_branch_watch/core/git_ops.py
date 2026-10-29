@@ -152,14 +152,21 @@ def detect_default_branch(repo_path: str, timeout: int = 10) -> str | None:
     return None
 
 
-def remote_heads(repo_path: str, timeout: int = 15) -> dict[str, str]:
-    """`git ls-remote --heads origin` as {branch name: sha}. Read-only."""
-    result = _run_git(repo_path, ["ls-remote", "--heads", "origin"], timeout)
+def remote_heads(repo_path: str, timeout: int = 15) -> dict[str, str] | None:
+    """`git ls-remote --heads origin` as {branch name: sha}. Read-only, never raises.
+
+    None means "could not tell" (git failed, timed out, or origin listed no branches at
+    all), never an empty answer, so a caller cannot mistake an unreachable or empty
+    origin for "every remote branch is gone".
+    """
+    result = _try_git(repo_path, ["ls-remote", "--heads", "origin"], timeout)
+    if result is None or result.returncode != 0:
+        return None
     heads: dict[str, str] = {}
     for line in result.stdout.splitlines():
         sha, _, ref = line.partition("\t")
         heads[ref.removeprefix("refs/heads/")] = sha
-    return heads
+    return heads or None
 
 
 def local_branches(repo_path: str, timeout: int = 10) -> list[LocalBranch]:

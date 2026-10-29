@@ -888,3 +888,63 @@ def test_check_all_renders_a_stale_branch_row_with_a_child_per_branch(app):
     item = app._stale_items[status.repo_path]
     assert item.title == "🧹 myrepo: 1 stale branch"
     assert [child.title for child in item.values()] == ["feat/x - remote deleted, merged"]
+
+
+def _run_cycle_with_stale(app, status, stale):
+    with (
+        patch.object(app._cycle, "_check_all", return_value=([status], {})),
+        patch.object(app._cycle, "_check_stale", return_value=stale),
+    ):
+        app.check_all(None)
+
+
+def _up_to_date(name: str) -> RepoStatus:
+    return _status(
+        name,
+        branch_statuses=[
+            BranchStatus(base="main", behind=0, ahead_of_base=0, kind=StatusKind.UP_TO_DATE)
+        ],
+    )
+
+
+def test_stale_row_disappears_when_the_next_cycle_cannot_read_origin(app):
+    status = _up_to_date("myrepo")
+    app.cfg.repos = [RepoConfig(repo_path=status.repo_path, base_branches=["main"])]
+    one_stale = {status.repo_path: [StaleBranch(name="feat/x", kind=StaleKind.GONE_MERGED)]}
+    _run_cycle_with_stale(app, status, one_stale)
+    title = app._stale_items[status.repo_path].title
+
+    _run_cycle_with_stale(app, status, {})  # repo missing = origin unreadable this cycle
+
+    assert status.repo_path not in app._stale_items
+    assert title not in app.menu
+
+
+def test_stale_row_is_removed_when_its_repo_is_no_longer_watched(app):
+    kept, dropped = _up_to_date("kept"), _up_to_date("dropped")
+    app.cfg.repos = [
+        RepoConfig(repo_path=kept.repo_path, base_branches=["main"]),
+        RepoConfig(repo_path=dropped.repo_path, base_branches=["main"]),
+    ]
+    stale = {
+        kept.repo_path: [StaleBranch(name="a", kind=StaleKind.GONE_MERGED)],
+        dropped.repo_path: [StaleBranch(name="b", kind=StaleKind.GONE_MERGED)],
+    }
+    with (
+        patch.object(app._cycle, "_check_all", return_value=([kept, dropped], {})),
+        patch.object(app._cycle, "_check_stale", return_value=stale),
+    ):
+        app.check_all(None)
+    dropped_title = app._stale_items[dropped.repo_path].title
+
+    app.cfg.repos = [RepoConfig(repo_path=kept.repo_path, base_branches=["main"])]
+    app._render([kept])
+
+    assert dropped.repo_path not in app._stale_items
+    assert dropped_title not in app.menu
+    assert kept.repo_path in app._stale_items
+
+    app.cfg.repos = []
+    app._render([])
+
+    assert app._stale_items == {}

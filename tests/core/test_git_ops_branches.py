@@ -54,3 +54,21 @@ def test_is_ancestor_true_for_merged_history_false_for_unmerged_work(
 
     assert git_ops.is_ancestor(clone, main_sha, feature_sha) is True
     assert git_ops.is_ancestor(clone, feature_sha, main_sha) is False
+
+
+def test_remote_heads_is_none_not_empty_when_origin_cannot_be_reached(fixture_repos_up_to_date):
+    _origin, clone = fixture_repos_up_to_date
+    _git(clone, "remote", "set-url", "origin", "/nonexistent/path/to/origin.git")
+
+    assert git_ops.remote_heads(clone) is None
+
+
+def test_remote_heads_is_none_when_origin_answers_with_no_branches_at_all(
+    fixture_repos_up_to_date, tmp_path
+):
+    _origin, clone = fixture_repos_up_to_date
+    empty_remote = str(tmp_path / "empty.git")
+    _git(str(tmp_path), "init", "--bare", "--quiet", empty_remote)
+    _git(clone, "remote", "set-url", "origin", empty_remote)
+
+    assert git_ops.remote_heads(clone) is None

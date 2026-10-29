@@ -98,7 +98,9 @@ def check_all(
 def check_stale_all(
     repos: list[RepoConfig],
     max_workers: int = 8,
-    check: Callable[[RepoConfig], list[StaleBranch]] = stale_branches.StaleBranchReader().check,
+    check: Callable[
+        [RepoConfig], list[StaleBranch] | None
+    ] = stale_branches.StaleBranchReader().check,
 ) -> dict[str, list[StaleBranch]]:
     """Stale-branch check for every repo, in a second bounded pool.
 
@@ -115,7 +117,9 @@ def check_stale_all(
         futures = {pool.submit(check, repo): repo for repo in repos}
         for future in as_completed(futures):
             try:
-                results[futures[future].repo_path] = future.result()
+                stale = future.result()
             except Exception:  # noqa: BLE001 - isolate any per-repo failure
                 continue
+            if stale is not None:
+                results[futures[future].repo_path] = stale
     return results

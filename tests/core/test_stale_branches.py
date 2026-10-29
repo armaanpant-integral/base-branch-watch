@@ -180,3 +180,23 @@ def test_real_repo_labels_each_kind_and_skips_everything_that_is_not_stale(
         "feat/squashed-gone": StaleKind.GONE_UNMERGED,
         "feat/merged-kept": StaleKind.MERGED,
     }
+
+
+def test_reader_reports_unknown_not_stale_when_origin_heads_cannot_be_read():
+    reader = stale_branches.StaleBranchReader(
+        list_branches=lambda _repo: [_branch("feat/x")],
+        remote_heads=lambda _repo: None,
+        is_ancestor=lambda _repo, _sha, _base: True,
+    )
+
+    assert reader.check(RepoConfig(repo_path="/r", base_branches=["main"])) is None
+
+
+def test_a_branch_tracking_a_remote_other_than_origin_is_never_judged_against_origin():
+    result = stale_branches.classify(
+        [_branch("feat/x", upstream="fork")],
+        remote_heads={"main": "sha-main"},
+        is_merged=lambda sha: True,
+    )
+
+    assert result == []
