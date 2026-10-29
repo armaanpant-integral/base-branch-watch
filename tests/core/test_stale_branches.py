@@ -283,3 +283,26 @@ def test_real_repo_handles_unicode_and_hash_branch_names_and_a_detached_head(
         "feat/café-#12": StaleKind.GONE_MERGED,
         "feat/plain": StaleKind.GONE_MERGED,
     }
+
+
+def _two_base_reader(answers: dict[str, bool | None]) -> stale_branches.StaleBranchReader:
+    return stale_branches.StaleBranchReader(
+        list_branches=lambda _repo: [_branch("feat/x")],
+        remote_heads=lambda _repo: {"main": "m", "release": "r", "feat/x": "sha-feat/x"},
+        is_ancestor=lambda _repo, _sha, base_ref: answers[base_ref],
+        resolve_ref=lambda _repo, _ref: None,
+    )
+
+
+def test_merged_into_the_first_base_but_not_the_second_still_counts_as_merged():
+    reader = _two_base_reader({"origin/main": True, "origin/release": False})
+
+    result = reader.check(RepoConfig(repo_path="/r", base_branches=["main", "release"]))
+
+    assert result == [StaleBranch(name="feat/x", kind=StaleKind.MERGED)]
+
+
+def test_one_base_that_cannot_be_measured_makes_the_whole_repo_unknown():
+    reader = _two_base_reader({"origin/main": False, "origin/release": None})
+
+    assert reader.check(RepoConfig(repo_path="/r", base_branches=["main", "release"])) is None

@@ -83,3 +83,12 @@ def test_is_ancestor_is_none_not_false_when_a_ref_does_not_exist(fixture_repos_u
     head = _git(clone, "rev-parse", "HEAD")
 
     assert git_ops.is_ancestor(clone, head, "origin/no-such-branch") is None
+
+
+def test_local_branches_is_none_when_git_prints_something_unparseable(monkeypatch):
+    import subprocess
+
+    garbled = subprocess.CompletedProcess(args=[], returncode=0, stdout="only\x00three\x00fields\n")
+    monkeypatch.setattr(git_ops, "_try_git", lambda *args, **kwargs: garbled)
+
+    assert git_ops.local_branches("/any/path") is None
