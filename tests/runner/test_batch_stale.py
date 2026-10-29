@@ -36,3 +36,17 @@ def test_a_repo_whose_stale_state_is_unknown_is_left_out_not_reported_clean():
     result = batch.check_stale_all([_repo("/good"), _repo("/offline")], check=check)
 
     assert result == {"/good": found}
+
+
+def test_a_repo_whose_check_raises_is_logged_with_its_path_and_the_real_cause(monkeypatch):
+    logged: list[str] = []
+    monkeypatch.setattr(batch.log, "append", logged.append)
+
+    def check(repo: RepoConfig) -> list[StaleBranch]:
+        raise TimeoutError("git for-each-ref timed out after 10s")
+
+    batch.check_stale_all([_repo("/slow")], check=check)
+
+    assert len(logged) == 1
+    assert "/slow" in logged[0] and "git for-each-ref timed out after 10s" in logged[0]
+    assert logged[0].startswith("[FAIL]")

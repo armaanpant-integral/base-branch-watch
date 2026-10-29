@@ -948,3 +948,37 @@ def test_stale_row_is_removed_when_its_repo_is_no_longer_watched(app):
     app._render([])
 
     assert app._stale_items == {}
+
+
+def test_stale_row_can_be_removed_after_its_title_changed_with_the_count(app):
+    status = _up_to_date("myrepo")
+    app.cfg.repos = [RepoConfig(repo_path=status.repo_path, base_branches=["main"])]
+    two = {
+        status.repo_path: [
+            StaleBranch(name="a", kind=StaleKind.GONE_MERGED),
+            StaleBranch(name="b", kind=StaleKind.MERGED),
+        ]
+    }
+    one = {status.repo_path: [StaleBranch(name="a", kind=StaleKind.GONE_MERGED)]}
+    _run_cycle_with_stale(app, status, two)
+    _run_cycle_with_stale(app, status, one)
+    assert app._stale_items[status.repo_path].title == "🧹 myrepo: 1 stale branch"
+
+    _run_cycle_with_stale(app, status, {status.repo_path: []})
+
+    assert status.repo_path not in app._stale_items
+    assert "🧹 myrepo: 2 stale branches" not in app.menu
+    assert "🧹 myrepo: 1 stale branch" not in app.menu
+
+
+def test_removing_a_stale_row_the_menu_already_lost_does_not_raise_or_leave_tracking(app):
+    status = _up_to_date("myrepo")
+    app.cfg.repos = [RepoConfig(repo_path=status.repo_path, base_branches=["main"])]
+    one = {status.repo_path: [StaleBranch(name="a", kind=StaleKind.GONE_MERGED)]}
+    _run_cycle_with_stale(app, status, one)
+    del app.menu[app._stale_item_keys[status.repo_path]]
+
+    app._remove_stale_row([status.repo_path])
+
+    assert status.repo_path not in app._stale_items
+    assert status.repo_path not in app._stale_item_keys

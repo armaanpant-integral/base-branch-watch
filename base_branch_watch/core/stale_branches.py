@@ -24,6 +24,7 @@ def classify(
     for branch in branches:
         if (
             branch.upstream_ref is None
+            or not branch.upstream_ref.startswith("refs/heads/")
             or branch.upstream_remote != "origin"
             or branch.worktree_path is not None
             or branch.name in watched_bases
@@ -38,6 +39,11 @@ def classify(
     return stale
 
 
+class _MergedStateUnknown(Exception):
+    """git could not say whether a branch is merged into a watched base (e.g. that base
+    was never fetched), so the whole repo's stale state is unknown."""
+
+
 class StaleBranchReader:
     """Gathers the git facts for one repo and hands them to `classify`.
 
@@ -46,9 +52,9 @@ class StaleBranchReader:
 
     def __init__(
         self,
-        list_branches: Callable[[str], list[LocalBranch]] = git_ops.local_branches,
+        list_branches: Callable[[str], list[LocalBranch] | None] = git_ops.local_branches,
         remote_heads: Callable[[str], dict[str, str] | None] = git_ops.remote_heads,
-        is_ancestor: Callable[[str, str, str], bool] = git_ops.is_ancestor,
+        is_ancestor: Callable[[str, str, str], bool | None] = git_ops.is_ancestor,
         resolve_ref: Callable[[str, str], str | None] = git_ops.resolve_ref,
     ) -> None:
         self._list_branches = list_branches
@@ -62,26 +68,35 @@ class StaleBranchReader:
         None is "unknown", deliberately distinct from [] ("nothing stale"): without
         origin's live branch list there is no way to tell which upstreams are gone.
         """
+        if not repo.base_branches:
+            return None  # nothing to measure "merged" against
         remote_heads = self._remote_heads(repo.repo_path)
-        if remote_heads is None:
+        branches = self._list_branches(repo.repo_path)
+        if remote_heads is None or branches is None:
             return None
 
+        base_refs = [f"origin/{base}" for base in repo.base_branches]
+        base_tips = {self._resolve_ref(repo.repo_path, ref) for ref in base_refs}
+
         def is_merged(branch_sha: str) -> bool:
-            return any(
-                self._is_ancestor(repo.repo_path, branch_sha, f"origin/{base}")
-                for base in repo.base_branches
-            )
+            merged = False
+            for base_ref in base_refs:
+                answer = self._is_ancestor(repo.repo_path, branch_sha, base_ref)
+                if answer is None:
+                    raise _MergedStateUnknown(base_ref)
+                merged = merged or answer
+            return merged
 
         def at_base_tip(branch_sha: str) -> bool:
-            return any(
-                self._resolve_ref(repo.repo_path, f"origin/{base}") == branch_sha
-                for base in repo.base_branches
-            )
+            return branch_sha in base_tips
 
-        return classify(
-            self._list_branches(repo.repo_path),
-            remote_heads,
-            is_merged,
-            watched_bases=set(repo.base_branches),
-            at_base_tip=at_base_tip,
-        )
+        try:
+            return classify(
+                branches,
+                remote_heads,
+                is_merged,
+                watched_bases=set(repo.base_branches),
+                at_base_tip=at_base_tip,
+            )
+        except _MergedStateUnknown:
+            return None

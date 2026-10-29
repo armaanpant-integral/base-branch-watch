@@ -72,3 +72,14 @@ def test_remote_heads_is_none_when_origin_answers_with_no_branches_at_all(
     _git(clone, "remote", "set-url", "origin", empty_remote)
 
     assert git_ops.remote_heads(clone) is None
+
+
+def test_local_branches_is_none_not_empty_when_git_cannot_list_them(tmp_path):
+    assert git_ops.local_branches(str(tmp_path / "not-a-repo")) is None
+
+
+def test_is_ancestor_is_none_not_false_when_a_ref_does_not_exist(fixture_repos_up_to_date):
+    _origin, clone = fixture_repos_up_to_date
+    head = _git(clone, "rev-parse", "HEAD")
+
+    assert git_ops.is_ancestor(clone, head, "origin/no-such-branch") is None

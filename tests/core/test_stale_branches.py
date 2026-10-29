@@ -200,3 +200,86 @@ def test_a_branch_tracking_a_remote_other_than_origin_is_never_judged_against_or
     )
 
     assert result == []
+
+
+def test_reader_reports_unknown_when_local_branches_cannot_be_listed():
+    reader = stale_branches.StaleBranchReader(
+        list_branches=lambda _repo: None,
+        remote_heads=lambda _repo: {"main": "sha-main"},
+        is_ancestor=lambda _repo, _sha, _base: True,
+    )
+
+    assert reader.check(RepoConfig(repo_path="/r", base_branches=["main"])) is None
+
+
+def test_reader_reports_unknown_when_merged_state_cannot_be_determined():
+    reader = stale_branches.StaleBranchReader(
+        list_branches=lambda _repo: [_branch("feat/x")],
+        remote_heads=lambda _repo: {"main": "sha-main"},
+        is_ancestor=lambda _repo, _sha, _base: None,  # e.g. origin/main was never fetched
+    )
+
+    assert reader.check(RepoConfig(repo_path="/r", base_branches=["main"])) is None
+
+
+def test_an_upstream_that_is_not_a_branch_ref_is_never_read_as_gone():
+    tracking_a_tag = LocalBranch(
+        name="feat/x",
+        sha="sha-x",
+        upstream_remote="origin",
+        upstream_ref="refs/tags/v1",
+        worktree_path=None,
+    )
+
+    result = stale_branches.classify(
+        [tracking_a_tag], remote_heads={"main": "sha-main"}, is_merged=lambda sha: True
+    )
+
+    assert result == []
+
+
+def test_a_repo_with_no_watched_base_branches_is_unknown_not_everything_unmerged():
+    reader = stale_branches.StaleBranchReader(
+        list_branches=lambda _repo: [_branch("feat/x")],
+        remote_heads=lambda _repo: {"main": "sha-main"},
+        is_ancestor=lambda _repo, _sha, _base: True,
+    )
+
+    assert reader.check(RepoConfig(repo_path="/r", base_branches=[])) is None
+
+
+def test_merged_into_any_one_watched_base_counts_as_merged():
+    reader = stale_branches.StaleBranchReader(
+        list_branches=lambda _repo: [_branch("feat/x")],
+        remote_heads=lambda _repo: {"main": "m", "release": "r", "feat/x": "sha-feat/x"},
+        is_ancestor=lambda _repo, _sha, base_ref: base_ref == "origin/release",
+        resolve_ref=lambda _repo, _ref: None,
+    )
+
+    result = reader.check(RepoConfig(repo_path="/r", base_branches=["main", "release"]))
+
+    assert result == [StaleBranch(name="feat/x", kind=StaleKind.MERGED)]
+
+
+def test_real_repo_handles_unicode_and_hash_branch_names_and_a_detached_head(
+    fixture_repos_up_to_date, default_branch_name
+):
+    origin, clone = fixture_repos_up_to_date
+    for name in ("feat/café-#12", "feat/plain"):
+        commit_on_new_branch(clone, name)
+        git(clone, "switch", default_branch_name)
+    git(origin, "merge", "--no-ff", "--no-edit", "feat/café-#12")
+    git(origin, "merge", "--no-ff", "--no-edit", "feat/plain")
+    git(origin, "branch", "-D", "feat/café-#12")
+    git(origin, "branch", "-D", "feat/plain")
+    git(clone, "fetch", "--quiet", "origin")
+    git(clone, "switch", "--detach", f"origin/{default_branch_name}")  # detached HEAD
+
+    result = stale_branches.StaleBranchReader().check(
+        RepoConfig(repo_path=clone, base_branches=[default_branch_name])
+    )
+
+    assert {branch.name: branch.kind for branch in result} == {
+        "feat/café-#12": StaleKind.GONE_MERGED,
+        "feat/plain": StaleKind.GONE_MERGED,
+    }

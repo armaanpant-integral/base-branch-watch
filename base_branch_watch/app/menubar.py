@@ -357,9 +357,10 @@ class BaseBranchWatchApp(rumps.App):
 
     def _remove_stale_row(self, repo_paths: list[str]) -> None:
         for repo_path in repo_paths:
-            key = self._stale_item_keys.pop(repo_path, None)
-            if key is not None:
+            key = self._stale_item_keys.get(repo_path)
+            if key is not None and key in self.menu:
                 del self.menu[key]
+            self._stale_item_keys.pop(repo_path, None)
             self._stale_items.pop(repo_path, None)
 
     def _render_stale_row(self, repo_path: str, spec: MenuItemSpec) -> None:

@@ -169,14 +169,23 @@ def remote_heads(repo_path: str, timeout: int = 15) -> dict[str, str] | None:
     return heads or None
 
 
-def local_branches(repo_path: str, timeout: int = 10) -> list[LocalBranch]:
-    """Every local branch with its upstream and checked-out worktree. Read-only."""
-    result = _run_git(
+def local_branches(repo_path: str, timeout: int = 10) -> list[LocalBranch] | None:
+    """Every local branch with its upstream and checked-out worktree. Read-only, never raises.
+
+    None means "could not tell" (git failed, timed out or printed something unparseable),
+    never an empty list, so a failure cannot be mistaken for "no branches, nothing stale".
+    """
+    result = _try_git(
         repo_path, ["for-each-ref", f"--format={_LOCAL_BRANCH_FORMAT}", "refs/heads"], timeout
     )
+    if result is None or result.returncode != 0:
+        return None
     branches = []
     for line in result.stdout.splitlines():
-        name, sha, remote, remote_ref, worktree = line.split("\x00")
+        fields = line.split("\x00")
+        if len(fields) != 5:
+            return None
+        name, sha, remote, remote_ref, worktree = fields
         branches.append(
             LocalBranch(
                 name=name,
@@ -189,9 +198,15 @@ def local_branches(repo_path: str, timeout: int = 10) -> list[LocalBranch]:
     return branches
 
 
-def is_ancestor(repo_path: str, ancestor: str, descendant: str, timeout: int = 10) -> bool:
-    """True when every commit of `ancestor` is reachable from `descendant`."""
-    result = _run_git(repo_path, ["merge-base", "--is-ancestor", ancestor, descendant], timeout)
+def is_ancestor(repo_path: str, ancestor: str, descendant: str, timeout: int = 10) -> bool | None:
+    """True when every commit of `ancestor` is reachable from `descendant`. Never raises.
+
+    git exits 1 for "not an ancestor" and 128 for a bad or missing ref; only the first is
+    a real answer. None means "could not tell", never False.
+    """
+    result = _try_git(repo_path, ["merge-base", "--is-ancestor", ancestor, descendant], timeout)
+    if result is None or result.returncode not in (0, 1):
+        return None
     return result.returncode == 0
 
 
