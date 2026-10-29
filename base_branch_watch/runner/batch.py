@@ -13,14 +13,21 @@ second concurrency mechanism. A gh failure isolates to that repo's PrStatus
 are wrapped in separate try/except blocks inside _check_one so a failure on
 either axis never discards an already-successfully-computed result on the
 other (D-08: PR status must never degrade git-status severity).
+
+Stale-branch checks are the one exception to "one pool": check_stale_all runs a
+second bounded pool, but only AFTER check_all has returned. The two pools never run
+at the same time, so the number of concurrent git processes still never exceeds
+max_workers. The alternative, a third element in check_all's return value, would have
+changed the shape that PollCycle and about a dozen tests unpack.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from base_branch_watch.core import base_verdict, pr_status
-from base_branch_watch.core.models import PrStatus, RepoConfig, RepoStatus
+from base_branch_watch.core import base_verdict, log, pr_status, stale_branches
+from base_branch_watch.core.models import PrStatus, RepoConfig, RepoStatus, StaleBranch
 
 
 def _check_one(
@@ -92,3 +99,39 @@ def check_all(
             if pr is not None:
                 pr_statuses[repo.repo_path] = pr
     return results, pr_statuses
+
+
+def check_stale_all(
+    repos: list[RepoConfig],
+    max_workers: int = 8,
+    check: Callable[
+        [RepoConfig], list[StaleBranch] | None
+    ] = stale_branches.StaleBranchReader().check,
+) -> dict[str, list[StaleBranch]]:
+    """Stale-branch check for every repo, in a second bounded pool.
+
+    This runs AFTER check_all returns (sequentially, not alongside it), so the total
+    number of concurrent git processes never exceeds max_workers. A separate pass,
+    not a third element of check_all's result, keeps check_all's return shape and its
+    many callers unchanged. A repo whose check raises is left out of the result, so
+    one broken repo never hides the others.
+    """
+    if not repos:
+        return {}
+    results: dict[str, list[StaleBranch]] = {}
+    with ThreadPoolExecutor(max_workers=min(max_workers, len(repos))) as pool:
+        futures = {pool.submit(check, repo): repo for repo in repos}
+        for future in as_completed(futures):
+            try:
+                stale = future.result()
+            except Exception as exc:  # noqa: BLE001 - isolate any per-repo failure
+                try:
+                    log.append(
+                        f"[FAIL] stale branch check raised for {futures[future].repo_path}: {exc!r}"
+                    )
+                except OSError:
+                    pass  # an unwritable log must not break the cycle
+                continue
+            if stale is not None:
+                results[futures[future].repo_path] = stale
+    return results

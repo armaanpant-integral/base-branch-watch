@@ -17,6 +17,7 @@ It watches your repos in the background, shows live status in the menu bar, warn
 - **Conflict-risk warning**: if merging the base branch's incoming changes into yours would really conflict (checked with a safe `git merge-tree` dry run), or the incoming changes touch a file you have uncommitted edits to, the badge escalates to "⚠️ conflict risk" instead of a plain "behind" count - you see this *before* you ever try to push
 - **Pre-push gate**: every `git push` in a watched repo is preceded by a summary of what's new on the base branch. If a real conflict is detected (via a safe dry-run, nothing is touched), you get an interactive "Push anyway?" prompt - default is to stop, but it's your call
 - **PR status in the menu**: once you've opened a PR, see its checks/review/mergeable state as a second row per repo, sourced via the `gh` CLI (reuses your existing `gh auth login` - no new login, no new token)
+- **Stale branch hints**: local branches whose branch on `origin` was deleted (the usual end of a merged PR), or that are already merged into your base branch, show up as one "🧹 N stale branches" row per repo, so you know what is safe to clean up. Informational only: it never changes the menu-bar icon, never notifies and never deletes anything
 - **One consolidated notification** per polling cycle (not spammy per-repo popups), deduped so you're not renotified for the same change
 - **Parallel, bounded-concurrency fetches** - adding more repos doesn't slow down each cycle
 - **Runs as a `launchd` LaunchAgent** - starts at login, survives crashes
@@ -83,6 +84,7 @@ Click the menu bar icon to see watched repos and their status.
 | ⚪ no open PR | Current branch has no PR yet |
 | ✅ PR #N merged / ⚫ closed | One-cycle confirmation that your PR landed (or was closed without merging) |
 | ⚠️ PR status - ... | `gh` isn't installed / isn't logged in / is rate-limited - this never blocks the git-status row above it |
+| 🧹 N stale branches | Local branches you can likely delete (click to expand). Each is labelled: *remote deleted, merged* (safe), *remote deleted, NOT merged (check before deleting)* (a squash merge or lost work, so look first), or *merged, remote branch still exists*. Never lists the checked-out branch, a watched base branch, a branch with no upstream, or one tracking a remote other than `origin`. If `origin` can't be read that cycle the row simply disappears (the app log notes it) rather than guessing |
 
 **Menu actions:**
 
@@ -104,14 +106,14 @@ There are two separate log files, and they're not the same thing:
 
 - **Pre-push hook silently fails (forcing `--no-verify`) if `.venv`'s files carry macOS's hidden flag - fixed on 2026-08-30, watch for recurrence.** Python 3.12+'s `site.py` silently skips loading any `.pth` file that has the filesystem-level "hidden" attribute (`UF_HIDDEN`, distinct from a dotfile name) - this is a CPython security hardening, not a bug in this project. If something (a sync tool, an install script, `chflags`) ever marks `.venv/lib/**` as hidden, the editable install's `.pth` file stops being read, `python3 -m base_branch_watch.hook` starts raising `ModuleNotFoundError: No module named 'base_branch_watch'` for every watched repo *except* base-branch-watch's own (which accidentally still works because of `cwd`-based import fallback), and every `git push` in those repos gets hard-blocked regardless of actual conflict status. Symptom: you find yourself needing `git push --no-verify` "sometimes" for no obvious reason. Check with `ls -lO .venv/lib/python3.12/site-packages/` (a `hidden` column means this is happening) and fix with `chflags -R nohidden .venv`; confirm the fix by running `cd /tmp && <path to venv>/bin/python3 -c "import base_branch_watch"` from that unrelated cwd and checking it no longer raises `ModuleNotFoundError`. Do not reach for `--no-verify` as a standing workaround - it skips the conflict-risk gate entirely, which defeats the point of this tool; run the `chflags` fix instead and confirm with the `/tmp`-cwd import check above.
 
-- **PR status can say "gh not installed" even when it is.** The LaunchAgent inherits launchd's bare default PATH (`/usr/bin:/bin:/usr/sbin:/sbin`), which doesn't include Homebrew's `/opt/homebrew/bin` (Apple Silicon) or `/usr/local/bin` (Intel) where `gh` typically lives. `core/pr_status.py` resolves `gh`'s location once via `shutil.which("gh")` at import time with no fallback path. A fix is in progress: baking the installer's PATH into the LaunchAgent plist. Terminal-run `bbwatch` commands are unaffected - only the menu-bar app's background PR-status checks are.
+- **PR status can say "gh not installed" even when it is.** The LaunchAgent inherits launchd's bare default PATH (`/usr/bin:/bin:/usr/sbin:/sbin`), which doesn't include Homebrew's `/opt/homebrew/bin` (Apple Silicon) or `/usr/local/bin` (Intel) where `gh` typically lives. `core/pr_status.py` resolves `gh`'s location once via `shutil.which("gh")` at import time with no fallback path. Fixed: the installer now bakes its PATH into the LaunchAgent plist, so re-run `install-agent` to pick the fix up if your agent was installed before it. Terminal-run `bbwatch` commands are unaffected - only the menu-bar app's background PR-status checks are.
 - **Dialogs can open on the wrong macOS Space.** The Add Repo folder picker, Add Repo base-branch prompt, Edit Base Branch(es) prompt, and Set Interval prompt can appear on a different Space than the one you're currently on, instead of following you there. Root cause: this is a menu-bar-only (`LSUIElement`) background app with no persistent window to anchor a Space, so a freshly-shown dialog can default to whichever Space the Desktop/Finder considers "home." A fix is in progress; the correct AppKit technique is still being verified.
 
 ## Development
 
 ```bash
 source .venv/bin/activate
-pytest tests/ -q     # 182 tests
+pytest tests/ -q
 ruff check .
 ```
 

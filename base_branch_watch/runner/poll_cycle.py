@@ -19,6 +19,7 @@ from base_branch_watch.core.models import (
     PrStatusKind,
     RepoConfig,
     RepoStatus,
+    StaleBranch,
     StatusKind,
 )
 from base_branch_watch.core.state import State
@@ -40,6 +41,8 @@ class CycleResult:
     state: State = field(default_factory=dict)
     """Notify state to persist after sending; equal to the input if unchanged."""
     log_lines: list[str] = field(default_factory=list)
+    stale_statuses: dict[str, list[StaleBranch]] = field(default_factory=dict)
+    """Stale local branches per repo path. A repo missing here could not be checked."""
 
 
 def status_log_line(status: RepoStatus) -> str:
@@ -56,10 +59,14 @@ class PollCycle:
         check_all: Callable[..., tuple[list[RepoStatus], dict[str, PrStatus]]] = batch.check_all,
         final_state: Callable[[str, int], PrStatusKind | None] = pr_status.final_state,
         current_branch: Callable[[str], str | None] = git_ops.current_branch,
+        check_stale: Callable[
+            [list[RepoConfig]], dict[str, list[StaleBranch]]
+        ] = batch.check_stale_all,
     ) -> None:
         self._check_all = check_all
         self._final_state = final_state
         self._current_branch = current_branch
+        self._check_stale = check_stale
         self.pr_statuses: dict[str, PrStatus] = {}
         self.last_pr_checked_at: dict[str, float] = {}
 
@@ -87,13 +94,27 @@ class PollCycle:
             self.last_pr_checked_at[repo_path] = now
         self.pr_statuses = self._merge_pr_statuses(statuses, fresh_pr_statuses)
 
+        log_lines = [status_log_line(status) for status in statuses]
+        try:
+            stale_statuses = self._check_stale(repos)
+        except Exception as exc:  # noqa: BLE001 - stale info is optional; never break the cycle
+            stale_statuses = {}
+            log_lines.append(f"[FAIL] stale branch check failed: {exc!r}")
+        else:
+            log_lines.extend(
+                f"[INFO] {status.name}: stale branch check skipped (branches could not be read)"
+                for status in statuses
+                if status.repo_path not in stale_statuses
+            )
+
         digest = notify_policy.decide_digest(notify_state, statuses)
         return CycleResult(
             statuses=statuses,
             pr_statuses=dict(self.pr_statuses),
             digest_statuses=digest.statuses,
             state=digest.state,
-            log_lines=[status_log_line(status) for status in statuses],
+            log_lines=log_lines,
+            stale_statuses=stale_statuses,
         )
 
     def _merge_pr_statuses(

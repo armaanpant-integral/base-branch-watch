@@ -95,6 +95,23 @@ class FetchResult:
     error: str | None = None
 
 
+@dataclass
+class LocalBranch:
+    name: str
+    sha: str
+    upstream_remote: str | None
+    upstream_ref: str | None
+    """The branch's ref on its upstream remote, e.g. `refs/heads/feat/x`."""
+    worktree_path: str | None
+    """Set when the branch is checked out in a worktree (the main one or a linked one)."""
+
+
+_LOCAL_BRANCH_FORMAT = (
+    "%(refname:short)%00%(objectname)%00%(upstream:remotename)%00"
+    "%(upstream:remoteref)%00%(worktreepath)"
+)
+
+
 def _run_git(
     repo_path: str, args: list[str], timeout: int, *, text: bool = True
 ) -> subprocess.CompletedProcess:
@@ -133,6 +150,64 @@ def detect_default_branch(repo_path: str, timeout: int = 10) -> str | None:
                 return ref[len("refs/heads/") :]
             return ref
     return None
+
+
+def remote_heads(repo_path: str, timeout: int = 15) -> dict[str, str] | None:
+    """`git ls-remote --heads origin` as {branch name: sha}. Read-only, never raises.
+
+    None means "could not tell" (git failed, timed out, or origin listed no branches at
+    all), never an empty answer, so a caller cannot mistake an unreachable or empty
+    origin for "every remote branch is gone".
+    """
+    result = _try_git(repo_path, ["ls-remote", "--heads", "origin"], timeout)
+    if result is None or result.returncode != 0:
+        return None
+    heads: dict[str, str] = {}
+    for line in result.stdout.splitlines():
+        sha, _, ref = line.partition("\t")
+        heads[ref.removeprefix("refs/heads/")] = sha
+    return heads or None
+
+
+def local_branches(repo_path: str, timeout: int = 10) -> list[LocalBranch] | None:
+    """Every local branch with its upstream and checked-out worktree. Read-only, never raises.
+
+    None means "could not tell" (git failed, timed out or printed something unparseable),
+    never an empty list, so a failure cannot be mistaken for "no branches, nothing stale".
+    """
+    result = _try_git(
+        repo_path, ["for-each-ref", f"--format={_LOCAL_BRANCH_FORMAT}", "refs/heads"], timeout
+    )
+    if result is None or result.returncode != 0:
+        return None
+    branches = []
+    for line in result.stdout.splitlines():
+        fields = line.split("\x00")
+        if len(fields) != 5:
+            return None
+        name, sha, remote, remote_ref, worktree = fields
+        branches.append(
+            LocalBranch(
+                name=name,
+                sha=sha,
+                upstream_remote=remote or None,
+                upstream_ref=remote_ref or None,
+                worktree_path=worktree or None,
+            )
+        )
+    return branches
+
+
+def is_ancestor(repo_path: str, ancestor: str, descendant: str, timeout: int = 10) -> bool | None:
+    """True when every commit of `ancestor` is reachable from `descendant`. Never raises.
+
+    git exits 1 for "not an ancestor" and 128 for a bad or missing ref; only the first is
+    a real answer. None means "could not tell", never False.
+    """
+    result = _try_git(repo_path, ["merge-base", "--is-ancestor", ancestor, descendant], timeout)
+    if result is None or result.returncode not in (0, 1):
+        return None
+    return result.returncode == 0
 
 
 def _remove_dataless_fetch_head(repo_path: str) -> None:

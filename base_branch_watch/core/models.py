@@ -253,3 +253,22 @@ class PrStatus:
         the batch (D-11).
         """
         return cls(kind=PrStatusKind.CHECK_FAILED, reason=reason)
+
+
+class StaleKind(IntEnum):
+    """Why a local branch is considered stale. Informational only: like PrStatus,
+    never folded into the git-status severity / worst-wins ranking."""
+
+    GONE_MERGED = 0
+    """Upstream deleted on origin and every commit is already in the base."""
+    GONE_UNMERGED = 1
+    """Upstream deleted on origin but the branch holds commits the base lacks: a
+    squash merge, or lost work. Never to be read as safe to delete."""
+    MERGED = 2
+    """Every commit is already in the base, but the branch still exists on origin."""
+
+
+@dataclass
+class StaleBranch:
+    name: str
+    kind: StaleKind

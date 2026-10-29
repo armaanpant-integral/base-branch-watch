@@ -1,0 +1,94 @@
+"""git_ops branch queries used by stale-branch detection, against real tmp git repos."""
+
+from __future__ import annotations
+
+import os
+
+from base_branch_watch.core import git_ops
+from tests.core.git_helpers import commit_on_new_branch as _commit_on_new_branch
+from tests.core.git_helpers import git as _git
+
+
+def test_remote_heads_maps_every_origin_branch_to_its_sha(
+    fixture_repos_up_to_date, default_branch_name
+):
+    _origin, clone = fixture_repos_up_to_date
+    main_sha = _git(clone, "rev-parse", default_branch_name)
+    feature_sha = _commit_on_new_branch(clone, "feat/x")
+
+    heads = git_ops.remote_heads(clone)
+
+    assert heads == {default_branch_name: main_sha, "feat/x": feature_sha}
+
+
+def test_local_branches_reports_sha_upstream_and_checked_out_worktree(
+    fixture_repos_up_to_date, default_branch_name
+):
+    _origin, clone = fixture_repos_up_to_date
+    feature_sha = _commit_on_new_branch(clone, "feat/x")
+    _git(clone, "switch", default_branch_name)
+    _commit_on_new_branch(clone, "local-only", push=False)
+    _git(clone, "switch", default_branch_name)
+
+    branches = {branch.name: branch for branch in git_ops.local_branches(clone)}
+
+    assert set(branches) == {default_branch_name, "feat/x", "local-only"}
+    pushed = branches["feat/x"]
+    assert (pushed.sha, pushed.upstream_remote, pushed.upstream_ref) == (
+        feature_sha,
+        "origin",
+        "refs/heads/feat/x",
+    )
+    assert pushed.worktree_path is None
+    unpushed = branches["local-only"]
+    assert (unpushed.upstream_remote, unpushed.upstream_ref) == (None, None)
+    assert os.path.realpath(branches[default_branch_name].worktree_path) == os.path.realpath(clone)
+
+
+def test_is_ancestor_true_for_merged_history_false_for_unmerged_work(
+    fixture_repos_up_to_date, default_branch_name
+):
+    _origin, clone = fixture_repos_up_to_date
+    main_sha = _git(clone, "rev-parse", default_branch_name)
+    feature_sha = _commit_on_new_branch(clone, "feat/x")
+
+    assert git_ops.is_ancestor(clone, main_sha, feature_sha) is True
+    assert git_ops.is_ancestor(clone, feature_sha, main_sha) is False
+
+
+def test_remote_heads_is_none_not_empty_when_origin_cannot_be_reached(fixture_repos_up_to_date):
+    _origin, clone = fixture_repos_up_to_date
+    _git(clone, "remote", "set-url", "origin", "/nonexistent/path/to/origin.git")
+
+    assert git_ops.remote_heads(clone) is None
+
+
+def test_remote_heads_is_none_when_origin_answers_with_no_branches_at_all(
+    fixture_repos_up_to_date, tmp_path
+):
+    _origin, clone = fixture_repos_up_to_date
+    empty_remote = str(tmp_path / "empty.git")
+    _git(str(tmp_path), "init", "--bare", "--quiet", empty_remote)
+    _git(clone, "remote", "set-url", "origin", empty_remote)
+
+    assert git_ops.remote_heads(clone) is None
+
+
+def test_local_branches_is_none_not_empty_when_git_cannot_list_them(tmp_path):
+    assert git_ops.local_branches(str(tmp_path / "not-a-repo")) is None
+
+
+def test_is_ancestor_is_none_not_false_when_a_ref_does_not_exist(fixture_repos_up_to_date):
+    _origin, clone = fixture_repos_up_to_date
+    head = _git(clone, "rev-parse", "HEAD")
+
+    assert git_ops.is_ancestor(clone, head, "origin/no-such-branch") is None
+
+
+def test_local_branches_is_none_when_git_prints_something_unparseable(monkeypatch):
+    import subprocess
+
+    garbled = subprocess.CompletedProcess(args=[], returncode=0, stdout="only\x00three\x00fields\n")
+    monkeypatch.setattr(git_ops, "_try_git", lambda *args, **kwargs: garbled)
+
+    assert git_ops.local_branches("/any/path") is None
