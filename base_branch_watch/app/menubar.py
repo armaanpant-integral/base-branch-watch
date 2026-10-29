@@ -51,7 +51,7 @@ QUIT_TITLE = "Quit"
 class BaseBranchWatchApp(rumps.App):
     def __init__(self):
         super().__init__("…", quit_button=None)
-        self.cfg = config.load_config()
+        self.cfg = config.load_config(quarantine=True)
         self.statuses: dict[str, RepoStatus] = {}
         self._repo_items: dict[str, rumps.MenuItem] = {}
         # rumps.MenuItem's dict key in a Menu is fixed to its *title at insertion
@@ -82,7 +82,7 @@ class BaseBranchWatchApp(rumps.App):
         self.remove_menu: rumps.MenuItem | None = None
         self.edit_menu: rumps.MenuItem | None = None
         self._notifier: Notifier = OsascriptNotifier()
-        self._state: state.State = state.load_state()
+        self._state: state.State = state.load_state(quarantine=True)
         # Self-update check: None checkout root = not a source install, so the
         # check is disabled. Monotonic -inf sentinel (WR-03) => first cycle
         # always checks ("once at launch"), then at most once per interval.
@@ -590,7 +590,7 @@ class BaseBranchWatchApp(rumps.App):
             return
 
         self.cfg = config.add_repo(self.cfg, repo_path, parsed)
-        config.save_config(self.cfg)
+        self._save_config()
         self._install_hook_for(repo_path)
         self._rebuild_remove_submenu()
         self._rebuild_edit_submenu()
@@ -609,7 +609,7 @@ class BaseBranchWatchApp(rumps.App):
             if resp != 1:
                 return
             self.cfg = config.remove_repo(self.cfg, repo_path)
-            config.save_config(self.cfg)
+            self._save_config()
             self._uninstall_hook_for(repo_path)
             self.statuses.pop(repo_path, None)
             self._rebuild_remove_submenu()
@@ -642,7 +642,7 @@ class BaseBranchWatchApp(rumps.App):
             if not parsed:
                 return
             self.cfg = config.add_repo(self.cfg, repo_path, parsed)
-            config.save_config(self.cfg)
+            self._save_config()
             self.check_all(None)
 
         return handler
@@ -667,7 +667,7 @@ class BaseBranchWatchApp(rumps.App):
         except ValueError:
             self._show_alert(title="Invalid Interval", message=f"{raw_text!r} is not a number.")
             return
-        config.save_config(self.cfg)
+        self._save_config()
         # Live-update: stop the existing Timer and start a new one at the new
         # interval so the change takes effect without an app relaunch.
         self.timer.stop()
@@ -727,6 +727,13 @@ class BaseBranchWatchApp(rumps.App):
         return handler
 
     # -- polling cycle -------------------------------------------------------
+
+    def _save_config(self) -> None:
+        """Persist self.cfg; a failed save is surfaced, not swallowed (the edit would
+        otherwise silently vanish on the next launch)."""
+        result = config.save_config(self.cfg)
+        if not result.ok:
+            self._show_alert(title="Could not save config", message=result.error or "unknown error")
 
     def _persist_state(self, next_state: state.State) -> None:
         """Adopt and save next_state only when it differs (send-then-persist, so a
