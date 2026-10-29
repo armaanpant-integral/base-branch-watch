@@ -61,7 +61,7 @@ def _cycle(
     batch_fake,
     final_state=lambda path, number: None,
     branch="feature",
-    check_stale=lambda repos: {},
+    check_stale=lambda repos: {repo.repo_path: [] for repo in repos},
 ) -> PollCycle:
     return PollCycle(
         check_all=batch_fake,
@@ -86,6 +86,17 @@ def test_stale_branches_found_for_a_repo_come_through_on_the_result():
     result = cycle.run([repo], {}, now=1000.0)
 
     assert result.stale_statuses == stale
+
+
+def test_a_repo_skipped_by_the_stale_check_is_logged_once_and_others_are_not():
+    checked, skipped = _repo("repo-a"), _repo("repo-b")
+    fake = FakeBatch({checked.repo_path: _status("repo-a"), skipped.repo_path: _status("repo-b")})
+    cycle = _cycle(fake, check_stale=lambda repos: {checked.repo_path: []})
+
+    result = cycle.run([checked, skipped], {}, now=1000.0)
+
+    stale_lines = [line for line in result.log_lines if "stale" in line]
+    assert stale_lines == ["[INFO] repo-b: stale branch check skipped (branches could not be read)"]
 
 
 def test_a_crashing_stale_check_leaves_git_status_intact_and_is_logged():

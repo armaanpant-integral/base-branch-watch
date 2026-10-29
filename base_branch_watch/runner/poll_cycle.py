@@ -100,6 +100,12 @@ class PollCycle:
         except Exception as exc:  # noqa: BLE001 - stale info is optional; never break the cycle
             stale_statuses = {}
             log_lines.append(f"[FAIL] stale branch check failed: {exc!r}")
+        else:
+            log_lines.extend(
+                f"[INFO] {status.name}: stale branch check skipped (branches could not be read)"
+                for status in statuses
+                if status.repo_path not in stale_statuses
+            )
 
         digest = notify_policy.decide_digest(notify_state, statuses)
         return CycleResult(

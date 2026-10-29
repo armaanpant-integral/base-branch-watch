@@ -26,6 +26,8 @@ EMPTY_STATE_TITLE = "No repos watched — click Add Repo… below"
 
 CONFLICT_PATHS_ROW_CAP = 10
 
+STALE_ROWS_CAP = 15
+
 PR_BRANCH_NAME_CAP = 40
 PR_REASON_CAP = 50
 
@@ -283,6 +285,10 @@ def _pr_row(pr_status: PrStatus, repo_name: str) -> MenuItemSpec:
     )
 
 
+def _stale_child_title(branch: StaleBranch) -> str:
+    return f"{_truncate(branch.name, PR_BRANCH_NAME_CAP)} - {_STALE_KIND_LABEL[branch.kind]}"
+
+
 def stale_row(branches: list[StaleBranch], repo_name: str) -> MenuItemSpec | None:
     """The informational stale-branch row for one repo, expanding into one child per branch.
 
@@ -292,9 +298,13 @@ def stale_row(branches: list[StaleBranch], repo_name: str) -> MenuItemSpec | Non
     if not branches:
         return None
     children = [
-        MenuItemSpec(title=f"{branch.name} - {_STALE_KIND_LABEL[branch.kind]}", callback_key=None)
-        for branch in branches
+        MenuItemSpec(title=_stale_child_title(branch), callback_key=None)
+        for branch in branches[:STALE_ROWS_CAP]
     ]
+    if len(branches) > STALE_ROWS_CAP:
+        children.append(
+            MenuItemSpec(title=f"…and {len(branches) - STALE_ROWS_CAP} more", callback_key=None)
+        )
     return MenuItemSpec(
         title=f"🧹 {repo_name}: {len(branches)} stale branch{'' if len(branches) == 1 else 'es'}",
         callback_key=None,

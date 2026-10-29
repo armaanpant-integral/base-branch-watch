@@ -46,3 +46,20 @@ def test_each_kind_gets_its_own_label_and_unmerged_warns_before_deleting():
         "b - remote deleted, NOT merged (check before deleting)",
         "c - merged, remote branch still exists",
     ]
+
+
+def test_a_very_long_branch_name_is_truncated_in_its_child_row():
+    row = menu_builder.stale_row([_gone_merged("x" * 60)], "repo-a")
+
+    assert row.children[0].title == f"{'x' * 40}… - remote deleted, merged"
+
+
+def test_a_long_list_is_capped_with_a_trailing_count_of_the_rest():
+    branches = [_gone_merged(f"feat/{number}") for number in range(20)]
+
+    row = menu_builder.stale_row(branches, "repo-a")
+
+    assert row.title == "🧹 repo-a: 20 stale branches"
+    assert len(row.children) == 16
+    assert row.children[0].title == "feat/0 - remote deleted, merged"
+    assert row.children[-1].title == "…and 5 more"
