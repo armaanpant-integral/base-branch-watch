@@ -18,6 +18,7 @@ from base_branch_watch.core.models import (
     RepoStatus,
     Severity,
     StaleBranch,
+    StaleKind,
     StatusKind,
 )
 
@@ -27,6 +28,12 @@ CONFLICT_PATHS_ROW_CAP = 10
 
 PR_BRANCH_NAME_CAP = 40
 PR_REASON_CAP = 50
+
+_STALE_KIND_LABEL = {
+    StaleKind.GONE_MERGED: "remote deleted, merged",
+    StaleKind.GONE_UNMERGED: "remote deleted, NOT merged (check before deleting)",
+    StaleKind.MERGED: "merged, remote branch still exists",
+}
 
 _SEVERITY_GLYPH = {
     Severity.OK: "🟢",
@@ -285,7 +292,7 @@ def stale_row(branches: list[StaleBranch], repo_name: str) -> MenuItemSpec | Non
     if not branches:
         return None
     children = [
-        MenuItemSpec(title=f"{branch.name} - remote deleted, merged", callback_key=None)
+        MenuItemSpec(title=f"{branch.name} - {_STALE_KIND_LABEL[branch.kind]}", callback_key=None)
         for branch in branches
     ]
     return MenuItemSpec(

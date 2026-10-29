@@ -29,3 +29,20 @@ def test_a_single_stale_branch_reads_as_singular():
 
 def test_nothing_stale_means_no_row_at_all():
     assert menu_builder.stale_row([], "repo-a") is None
+
+
+def test_each_kind_gets_its_own_label_and_unmerged_warns_before_deleting():
+    row = menu_builder.stale_row(
+        [
+            StaleBranch(name="a", kind=StaleKind.GONE_MERGED),
+            StaleBranch(name="b", kind=StaleKind.GONE_UNMERGED),
+            StaleBranch(name="c", kind=StaleKind.MERGED),
+        ],
+        "repo-a",
+    )
+
+    assert [child.title for child in row.children] == [
+        "a - remote deleted, merged",
+        "b - remote deleted, NOT merged (check before deleting)",
+        "c - merged, remote branch still exists",
+    ]

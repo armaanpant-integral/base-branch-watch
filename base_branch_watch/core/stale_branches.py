@@ -17,14 +17,23 @@ def classify(
     branches: list[LocalBranch],
     remote_heads: dict[str, str],
     is_merged: Callable[[str], bool],
+    watched_bases: frozenset[str] | set[str] = frozenset(),
+    at_base_tip: Callable[[str], bool] = lambda sha: False,
 ) -> list[StaleBranch]:
     stale = []
     for branch in branches:
-        if branch.upstream_ref is None:
+        if (
+            branch.upstream_ref is None
+            or branch.worktree_path is not None
+            or branch.name in watched_bases
+        ):
             continue
         upstream_gone = branch.upstream_ref.removeprefix("refs/heads/") not in remote_heads
-        if upstream_gone and is_merged(branch.sha):
-            stale.append(StaleBranch(name=branch.name, kind=StaleKind.GONE_MERGED))
+        if upstream_gone:
+            kind = StaleKind.GONE_MERGED if is_merged(branch.sha) else StaleKind.GONE_UNMERGED
+            stale.append(StaleBranch(name=branch.name, kind=kind))
+        elif is_merged(branch.sha) and not at_base_tip(branch.sha):
+            stale.append(StaleBranch(name=branch.name, kind=StaleKind.MERGED))
     return stale
 
 
@@ -39,10 +48,12 @@ class StaleBranchReader:
         list_branches: Callable[[str], list[LocalBranch]] = git_ops.local_branches,
         remote_heads: Callable[[str], dict[str, str]] = git_ops.remote_heads,
         is_ancestor: Callable[[str, str, str], bool] = git_ops.is_ancestor,
+        resolve_ref: Callable[[str, str], str | None] = git_ops.resolve_ref,
     ) -> None:
         self._list_branches = list_branches
         self._remote_heads = remote_heads
         self._is_ancestor = is_ancestor
+        self._resolve_ref = resolve_ref
 
     def check(self, repo: RepoConfig) -> list[StaleBranch]:
         def is_merged(branch_sha: str) -> bool:
@@ -51,6 +62,16 @@ class StaleBranchReader:
                 for base in repo.base_branches
             )
 
+        def at_base_tip(branch_sha: str) -> bool:
+            return any(
+                self._resolve_ref(repo.repo_path, f"origin/{base}") == branch_sha
+                for base in repo.base_branches
+            )
+
         return classify(
-            self._list_branches(repo.repo_path), self._remote_heads(repo.repo_path), is_merged
+            self._list_branches(repo.repo_path),
+            self._remote_heads(repo.repo_path),
+            is_merged,
+            watched_bases=set(repo.base_branches),
+            at_base_tip=at_base_tip,
         )
