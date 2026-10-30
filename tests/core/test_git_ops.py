@@ -215,8 +215,7 @@ REAL_GIT_FETCH_ERRORS = [
         "network unreachable",
     ),
     (
-        "fatal: unable to access 'https://github.com/o/r.git/': "
-        "Couldn't connect to server\n",
+        "fatal: unable to access 'https://github.com/o/r.git/': Couldn't connect to server\n",
         "network unreachable",
     ),
     (
@@ -444,9 +443,7 @@ def test_check_repo_keeps_reason_short_but_logs_full_stderr_line(
         )
 
     reason = status.branch_statuses[0].reason
-    assert reason == (
-        "fetch failed (auth or access denied): The requested URL returned error: 403"
-    )
+    assert reason == ("fetch failed (auth or access denied): The requested URL returned error: 403")
     assert "ssh" not in reason.lower()
     assert log.log_path().read_text().splitlines() == [
         f"[FAIL] fetch failed for {clone_path} (base {default_branch_name}, "

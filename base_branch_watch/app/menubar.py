@@ -572,9 +572,7 @@ class BaseBranchWatchApp(rumps.App):
 
         resp = self._show_text_prompt(
             title="Add Repo",
-            message=(
-                f"Base branch(es) to watch for {repo_name} - comma-separated for multiple:"
-            ),
+            message=(f"Base branch(es) to watch for {repo_name} - comma-separated for multiple:"),
             default_text=detected or "main",
             ok="Add",
             cancel="Cancel",

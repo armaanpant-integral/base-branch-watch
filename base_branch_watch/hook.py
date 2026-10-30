@@ -66,11 +66,7 @@ def main(argv: list[str] | None = None) -> int:
     cfg = config.load_config()
     resolved_toplevel = os.path.realpath(toplevel)
     matched_repo = next(
-        (
-            repo
-            for repo in cfg.repos
-            if os.path.realpath(repo.repo_path) == resolved_toplevel
-        ),
+        (repo for repo in cfg.repos if os.path.realpath(repo.repo_path) == resolved_toplevel),
         None,
     )
     if matched_repo is None:
