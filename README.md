@@ -67,9 +67,15 @@ Full setup details, macOS Full Disk Access / notification-permission gotchas, un
 
 ## Using it
 
-**Click** the menu bar icon to open the dashboard panel. **Right-click** (or control-click, or **More…** in the panel footer) opens the full menu with every action.
+**Click** the menu bar icon to open the dashboard panel. **Right-click** (or control-click) the icon opens the full menu with every action (Remove, Edit Base Branch, Set Interval, Open Log, Quit). The panel opens over whatever space or full-screen app is in front.
 
-**Dashboard panel:** a header ("2 need attention", "4 clear · checked 2m ago") over a grid of one tile per watched repo, repos that need attention first. Click a tile for the same detail the menu row gives. Each tile shows:
+**Dashboard panel:** a header ("2 need attention", "4 clear · checked 2m ago") over three tabs. Long lists scroll. Footer buttons: **Refresh** and **Add repo**.
+
+- **Repos** - a grid of one tile per watched repo, repos that need attention first. Click a tile for the same detail the menu row gives.
+- **PRs** - one card per repo whose current branch has a PR: PR number, a status pill (`PR ready`, the worst failing or pending check, `PR merged`, `PR closed`) and, for an open PR, a checks · review · mergeable summary. Click a card for that repo's detail.
+- **Stale** - local branches you can likely delete, grouped by repo, biggest group first. Each branch says whether the remote branch is gone and whether it was merged. `deleted on remote, NOT merged` is shown in orange: a squash merge or lost work, so look first.
+
+Each repo tile shows:
 
 | On the tile | It means |
 |---|---|
@@ -98,7 +104,7 @@ PR state and stale branches are informational: they colour the pill but never tu
 | ⚠️ PR status - ... | `gh` isn't installed / isn't logged in / is rate-limited - this never blocks the git-status row above it |
 | 🧹 N stale branches | Local branches you can likely delete (click to expand). Each is labelled: *remote deleted, merged* (safe), *remote deleted, NOT merged (check before deleting)* (a squash merge or lost work, so look first), or *merged, remote branch still exists*. Never lists the checked-out branch, a watched base branch, a branch with no upstream, or one tracking a remote other than `origin`. If `origin` can't be read that cycle the row simply disappears (the app log notes it) rather than guessing |
 
-**Menu actions** (right-click the icon, or **More…** in the panel; the panel also has Refresh and Add repo buttons):
+**Menu actions** (right-click the icon; the panel also has Refresh and Add repo buttons):
 
 - **Add Repo…** - pick a repo folder; base branch is auto-detected from `origin`'s default, editable
 - **Edit Base Branch(es)** - change a repo's watched base branch(es) without removing and re-adding it
