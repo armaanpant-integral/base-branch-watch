@@ -58,6 +58,7 @@ class PrRow:
     pill_tone: PillTone
     review: str
     """Short review state ("approved", ...); empty unless the PR is open."""
+    is_open: bool
 
 
 @dataclass(frozen=True)
@@ -72,18 +73,30 @@ class StaleRow:
 class StaleGroup:
     repo_path: str
     repo_name: str
-    branches: list[StaleRow]
+    branches: tuple[StaleRow, ...]
 
 
 @dataclass(frozen=True)
 class PanelModel:
-    tiles: list[RepoTile]
-    prs: list[PrRow]
-    stale_groups: list[StaleGroup]
-    attention_count: int
-    clear_count: int
-    open_pr_count: int
-    stale_total: int
+    tiles: tuple[RepoTile, ...]
+    prs: tuple[PrRow, ...]
+    stale_groups: tuple[StaleGroup, ...]
+
+    @property
+    def attention_count(self) -> int:
+        return sum(1 for tile in self.tiles if tile.severity > Severity.OK)
+
+    @property
+    def clear_count(self) -> int:
+        return len(self.tiles) - self.attention_count
+
+    @property
+    def open_pr_count(self) -> int:
+        return sum(1 for row in self.prs if row.is_open)
+
+    @property
+    def stale_total(self) -> int:
+        return sum(len(group.branches) for group in self.stale_groups)
 
 
 def _git_pill(status: RepoStatus) -> tuple[str, PillTone] | None:
@@ -111,7 +124,7 @@ def _pr_pill(pr_status: PrStatus | None) -> tuple[str, PillTone]:
         return "No open PR", PillTone.NEUTRAL
     if pr_status.kind == PrStatusKind.OPEN:
         glyph, headline = menu_builder.pr_headline(pr_status)
-        if glyph == "✅":
+        if glyph == menu_builder.PR_READY_GLYPH:
             return "PR ready", PillTone.OK
         return headline, PillTone.ATTENTION
     if pr_status.kind == PrStatusKind.MERGED:
@@ -157,6 +170,7 @@ def _pr_row(status: RepoStatus, pr_status: PrStatus) -> PrRow:
         pill=pill,
         pill_tone=tone,
         review=menu_builder.pr_review_text(pr_status) if is_open else "",
+        is_open=is_open,
     )
 
 
@@ -178,14 +192,14 @@ def _stale_groups(
         StaleGroup(
             repo_path=status.repo_path,
             repo_name=status.name,
-            branches=[
+            branches=tuple(
                 StaleRow(
                     name=branch.name,
                     label=_STALE_LABELS[branch.kind],
                     needs_review=branch.kind == StaleKind.GONE_UNMERGED,
                 )
                 for branch in stale_statuses[status.repo_path]
-            ],
+            ),
         )
         for status in statuses
         if stale_statuses.get(status.repo_path)
@@ -204,13 +218,8 @@ def build_panel(
         for status in statuses
     ]
     tiles.sort(key=lambda tile: (-tile.severity, tile.name))
-    attention = sum(1 for tile in tiles if tile.severity > Severity.OK)
     return PanelModel(
-        tiles=tiles,
-        prs=_pr_rows(statuses, pr_statuses),
-        stale_groups=_stale_groups(statuses, stale_statuses),
-        attention_count=attention,
-        clear_count=len(tiles) - attention,
-        open_pr_count=sum(1 for pr in pr_statuses.values() if pr.kind == PrStatusKind.OPEN),
-        stale_total=sum(len(branches) for branches in stale_statuses.values()),
+        tiles=tuple(tiles),
+        prs=tuple(_pr_rows(statuses, pr_statuses)),
+        stale_groups=tuple(_stale_groups(statuses, stale_statuses)),
     )

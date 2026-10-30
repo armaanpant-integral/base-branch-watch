@@ -592,3 +592,68 @@ def test_pr_row_closed_locked_string():
     assert spec.title == "⚪ repo: PR #7 closed (not merged)"
     assert spec.callback_key is None
     assert spec.children == []
+
+
+# -- pr_headline: the worst-of-three collapse (rank, ties, glyph vocabulary) ------
+
+
+def _open(**kwargs):
+    return _pr_status(kind=PrStatusKind.OPEN, **kwargs)
+
+
+def test_pr_headline_failing_beats_warning_beats_pending():
+    failing = _open(checks_pass=0, checks_fail=1, checks_total=1, review_decision="REVIEW_REQUIRED")
+    assert menu_builder.pr_headline(failing)[0] == "❌"
+
+    warning_over_pending = _open(checks_pass=0, checks_total=-1, review_decision="REVIEW_REQUIRED")
+    assert menu_builder.pr_headline(warning_over_pending) == ("⚠️", "checks unavailable")
+
+
+def test_pr_headline_tie_goes_to_the_earliest_segment():
+    pending_checks_and_review = _open(checks_pass=0, checks_pending=2, checks_total=2)
+    pending_checks_and_review.review_decision = "REVIEW_REQUIRED"
+
+    glyph, text = menu_builder.pr_headline(pending_checks_and_review)
+
+    assert (glyph, text) == ("⏳", "2 pending (0/2)")
+
+
+def test_pr_headline_all_clear_and_no_checks_are_ready():
+    assert menu_builder.pr_headline(_open()) == (menu_builder.PR_READY_GLYPH, "ready")
+    no_checks = _open(checks_pass=0, checks_total=0, review_decision=None)
+    assert menu_builder.pr_headline(no_checks) == (menu_builder.PR_READY_GLYPH, "ready")
+
+
+def test_every_glyph_the_pr_segments_emit_is_ranked_or_explicitly_ready():
+    """A glyph missing from the rank table (for example one without the U+FE0F
+    variation selector) would silently rank as "ready" and hide a warning."""
+    ready_like = {menu_builder.PR_READY_GLYPH, "—"}
+    seen: set[str] = set()
+    for checks_total in (-1, 0, 3):
+        for fail, pending in ((0, 0), (1, 0), (0, 1)):
+            for review in ("APPROVED", "CHANGES_REQUESTED", "REVIEW_REQUIRED", None):
+                for merge in (
+                    "CLEAN",
+                    "DIRTY",
+                    "BLOCKED",
+                    "BEHIND",
+                    "DRAFT",
+                    "UNSTABLE",
+                    "UNKNOWN",
+                ):
+                    status = _open(
+                        checks_total=checks_total,
+                        checks_fail=fail,
+                        checks_pending=pending,
+                        review_decision=review,
+                        merge_state_status=merge,
+                    )
+                    seen.update(
+                        seg(status)[0]
+                        for seg in (
+                            menu_builder._checks_segment,
+                            menu_builder._review_segment,
+                            menu_builder._mergeable_segment,
+                        )
+                    )
+    assert seen <= ready_like | set(menu_builder._PR_GLYPH_RANK)

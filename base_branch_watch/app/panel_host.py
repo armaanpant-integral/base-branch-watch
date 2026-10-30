@@ -48,11 +48,17 @@ class PanelHost:
         self._target = ActionTarget.alloc().initWithCallbacks_([self._on_status_click])
 
     def install(self) -> None:
-        self._status_item.setMenu_(None)
-        self._button.setTarget_(self._target)
-        self._button.setAction_("fire:")
-        self._button.setTag_(0)
-        self._button.sendActionOn_(NSEventMaskLeftMouseUp | NSEventMaskRightMouseUp)
+        """Take over clicks. The menu is detached last, and put back if anything fails,
+        so a failed install never leaves an icon with no menu and no panel."""
+        try:
+            self._button.setTarget_(self._target)
+            self._button.setAction_("fire:")
+            self._button.setTag_(0)
+            self._button.sendActionOn_(NSEventMaskLeftMouseUp | NSEventMaskRightMouseUp)
+            self._status_item.setMenu_(None)
+        except Exception:
+            self._status_item.setMenu_(self._menu)
+            raise
 
     def refresh(self) -> None:
         """Re-render in place if the popover is open (called after each poll cycle)."""
@@ -82,6 +88,8 @@ class PanelHost:
         self._panel.close()
         event = NSApplication.sharedApplication().currentEvent()
         if event is None:
-            log.append("[FAIL] dashboard panel could not open menu: no current event")
+            # No event to anchor a context menu (a synthesized click): pop it from the
+            # status item itself so Quit and the other actions stay reachable.
+            self._status_item.popUpStatusItemMenu_(self._menu)
             return
         NSMenu.popUpContextMenu_withEvent_forView_(self._menu, event, self._button)

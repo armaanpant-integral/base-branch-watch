@@ -39,6 +39,7 @@ from base_branch_watch.app.panel_model import (
     RepoTile,
     StaleGroup,
 )
+from base_branch_watch.core import log
 from base_branch_watch.core.models import Severity
 
 PANEL_WIDTH = 520
@@ -51,7 +52,7 @@ TABS_HEIGHT = 30
 MAX_CONTENT_HEIGHT = 470
 CONTENT_WIDTH = PANEL_WIDTH - 2 * PADDING
 TILE_WIDTH = (CONTENT_WIDTH - GAP) // 2
-TILE_WIDTH_PAD = 14
+TILE_PADDING = 14
 STALE_TILE_HEIGHT = 150
 STALE_PREVIEW_ROWS = 3
 TAB_TITLES = ("Repos", "PRs", "Stale")
@@ -87,8 +88,31 @@ class ActionTarget(NSObject):
     @objc.IBAction
     def fire_(self, sender):
         tag = int(sender.tag())
-        if 0 <= tag < len(self._callbacks):
+        if not 0 <= tag < len(self._callbacks):
+            # A view from a previous render outlived its callbacks.
+            log.append(f"[FAIL] dashboard panel click with unknown tag {tag}")
+            return
+        try:
             self._callbacks[tag](sender)
+        except Exception as exc:  # noqa: BLE001 - never raise out of an AppKit action
+            log.append(f"[FAIL] dashboard panel action {tag} raised: {exc!r}")
+
+
+class _PopoverDelegate(NSObject):
+    """Runs a handler just before the popover becomes visible."""
+
+    def initWithWillShow_(self, will_show):
+        self = objc.super(_PopoverDelegate, self).init()
+        if self is None:
+            return None
+        self._will_show = will_show
+        return self
+
+    def popoverWillShow_(self, _notification):
+        try:
+            self._will_show()
+        except Exception as exc:  # noqa: BLE001 - never raise out of an AppKit delegate
+            log.append(f"[FAIL] dashboard panel will-show raised: {exc!r}")
 
 
 def _label(text, size, weight=None, color=None, mono=False, align=None):
@@ -166,25 +190,25 @@ def _tile_view(tile: RepoTile, tag: int, target) -> NSView:
     _place(background, root, 0, 0, TILE_WIDTH, TILE_HEIGHT)
     inner = root
 
-    text_x = TILE_WIDTH_PAD + 18
-    _place(_dot(tile.severity), inner, TILE_WIDTH_PAD, 19, 10, 10)
+    text_x = TILE_PADDING + 18
+    _place(_dot(tile.severity), inner, TILE_PADDING, 19, 10, 10)
     name = _label(tile.name, 16, _FONT_SEMIBOLD)
-    _place(name, inner, text_x, 14, TILE_WIDTH - text_x - TILE_WIDTH_PAD, 21)
+    _place(name, inner, text_x, 14, TILE_WIDTH - text_x - TILE_PADDING, 21)
     base = _label(tile.base or " ", 12.5, color=NSColor.secondaryLabelColor(), mono=True)
-    _place(base, inner, text_x, 38, TILE_WIDTH - text_x - TILE_WIDTH_PAD, 17)
+    _place(base, inner, text_x, 38, TILE_WIDTH - text_x - TILE_PADDING, 17)
 
     arrows = _label("", 14)
     arrows.setAttributedStringValue_(_arrows(tile.behind, tile.unpushed))
-    _place(arrows, inner, TILE_WIDTH_PAD, 64, 100, 18)
+    _place(arrows, inner, TILE_PADDING, 64, 100, 18)
     detail = _label(tile.detail, 13, color=NSColor.secondaryLabelColor(), align=_NS_ALIGN_RIGHT)
-    _place(detail, inner, 110, 64, TILE_WIDTH - 110 - TILE_WIDTH_PAD, 18)
+    _place(detail, inner, 110, 64, TILE_WIDTH - 110 - TILE_PADDING, 18)
 
     fill, text_color = _pill_colors(tile.pill_tone)
     pill_label = _label(tile.pill, 12.5, _FONT_SEMIBOLD, text_color)
     pill_label.sizeToFit()
-    pill_w = min(pill_label.frame().size.width + 20, TILE_WIDTH - 2 * TILE_WIDTH_PAD)
+    pill_w = min(pill_label.frame().size.width + 20, TILE_WIDTH - 2 * TILE_PADDING)
     pill = _box(fill, 10)
-    _place(pill, inner, TILE_WIDTH_PAD, 88, pill_w, 20)
+    _place(pill, inner, TILE_PADDING, 88, pill_w, 20)
     _place(pill_label, pill.contentView(), 10, 1, pill_w - 20, 17)
 
     click = NSButton.alloc().init()
@@ -239,7 +263,7 @@ def _pr_tile(row: PrRow, tag: int, target) -> NSView:
     """Same shape as a repo tile: dot, name, branch, one detail row, one pill."""
     alert = row.pill_tone == PillTone.ATTENTION
     card = _card(TILE_WIDTH, TILE_HEIGHT, alert)
-    pad = TILE_WIDTH_PAD
+    pad = TILE_PADDING
     text_x = pad + 18
     inner_w = TILE_WIDTH - text_x - pad
     _place(_tone_dot(row.pill_tone), card, pad, 19, 10, 10)
@@ -260,7 +284,7 @@ def _stale_tile(group: StaleGroup, tag: int, target) -> NSView:
     """Same shape as a repo tile, taller to preview the first few branch names."""
     needs_review = any(branch.needs_review for branch in group.branches)
     card = _card(TILE_WIDTH, STALE_TILE_HEIGHT, needs_review)
-    pad = TILE_WIDTH_PAD
+    pad = TILE_PADDING
     text_x = pad + 18
     inner_w = TILE_WIDTH - text_x - pad
     tone = PillTone.ATTENTION if needs_review else PillTone.NEUTRAL
@@ -316,6 +340,9 @@ class DashboardPanel:
         self._target = ActionTarget.alloc().initWithCallbacks_(self._callbacks)
         self._popover = NSPopover.alloc().init()
         self._popover.setBehavior_(_NS_POPOVER_TRANSIENT)
+        # Join all spaces before the window is visible, not after (see _follow_active_space).
+        self._delegate = _PopoverDelegate.alloc().initWithWillShow_(self._follow_active_space)
+        self._popover.setDelegate_(self._delegate)
         self._controller = NSViewController.alloc().init()
         self._popover.setContentViewController_(self._controller)
         self._tab = 0
@@ -478,8 +505,10 @@ class DashboardPanel:
         the app instead would yank the user back to the desktop).
         """
         window = self._controller.view().window()
-        if window is not None:
-            window.setCollectionBehavior_(
-                NSWindowCollectionBehaviorCanJoinAllSpaces
-                | NSWindowCollectionBehaviorFullScreenAuxiliary
-            )
+        if window is None:
+            log.append("[FAIL] dashboard panel has no window to join all spaces")
+            return
+        window.setCollectionBehavior_(
+            NSWindowCollectionBehaviorCanJoinAllSpaces
+            | NSWindowCollectionBehaviorFullScreenAuxiliary
+        )

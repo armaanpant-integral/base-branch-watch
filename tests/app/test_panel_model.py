@@ -218,7 +218,7 @@ def test_counts_for_summary_and_tabs():
 def test_empty_panel_has_no_tiles_and_zero_counts():
     panel = build_panel([], {}, {})
 
-    assert panel.tiles == []
+    assert panel.tiles == ()
     assert (panel.attention_count, panel.clear_count) == (0, 0)
 
 
@@ -252,7 +252,7 @@ def test_prs_lists_only_repos_with_a_pr_attention_first_then_name():
 def test_prs_empty_when_no_repo_has_a_pr():
     status = _repo("r", branches=[_branch()])
 
-    assert build_panel([status], {}, {}).prs == []
+    assert build_panel([status], {}, {}).prs == ()
 
 
 def test_stale_groups_are_per_repo_largest_first_with_kind_labels():
@@ -277,6 +277,47 @@ def test_stale_groups_are_per_repo_largest_first_with_kind_labels():
     assert first.branches[0].needs_review is False
     assert first.branches[1].label == "deleted on remote, NOT merged"
     assert first.branches[1].needs_review is True
+
+
+def test_open_pr_with_only_a_warning_is_not_shown_as_ready():
+    status = _repo("r", branches=[_branch()])
+    pr = _open_pr(7, checks_pass=0, checks_total=-1)
+
+    (tile,) = build_panel([status], {status.repo_path: pr}, {}).tiles
+
+    assert tile.pill == "checks unavailable"
+    assert tile.pill_tone == PillTone.ATTENTION
+
+
+def test_open_pr_count_excludes_merged_and_ignores_repos_not_in_statuses():
+    open_repo = _repo("open", branches=[_branch()])
+    merged_repo = _repo("merged", branches=[_branch()])
+    gone = _repo("gone", branches=[_branch()])
+    prs = {
+        open_repo.repo_path: _open_pr(1),
+        merged_repo.repo_path: PrStatus(kind=PrStatusKind.MERGED, number=2),
+        gone.repo_path: _open_pr(3),
+    }
+    stale = {gone.repo_path: _stale(4)}
+
+    panel = build_panel([open_repo, merged_repo], prs, stale)
+
+    assert panel.open_pr_count == 1
+    assert len(panel.prs) == 2
+    assert panel.stale_total == 0
+
+
+def test_every_stale_kind_has_a_panel_label_and_only_unmerged_needs_review():
+    status = _repo("r", branches=[_branch()])
+    stale = {status.repo_path: [StaleBranch(name=kind.name, kind=kind) for kind in StaleKind]}
+
+    (group,) = build_panel([status], {}, stale).stale_groups
+
+    assert {row.name: row.needs_review for row in group.branches} == {
+        "GONE_MERGED": False,
+        "GONE_UNMERGED": True,
+        "MERGED": False,
+    }
 
 
 def test_module_is_pure_no_appkit_or_rumps_import():

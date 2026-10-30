@@ -210,13 +210,16 @@ def _mergeable_segment(status: PrStatus) -> tuple[str, str, str]:
     return "⏳", "mergeability unknown", "unknown — GitHub still computing"
 
 
+PR_READY_GLYPH = "✅"
 _PR_GLYPH_RANK = {"❌": 3, "⚠️": 2, "⏳": 1}
 
 
 def _headline_of(segments: list[tuple[str, str]]) -> tuple[str, str]:
+    """The worst segment as (glyph, text), or (PR_READY_GLYPH, "ready") when none is
+    failing, warning or pending. Ties go to the earliest segment."""
     worst_glyph, worst_text = max(segments, key=lambda seg: _PR_GLYPH_RANK.get(seg[0], 0))
     if worst_glyph not in _PR_GLYPH_RANK:
-        return "✅", "ready"
+        return PR_READY_GLYPH, "ready"
     return worst_glyph, worst_text
 
 

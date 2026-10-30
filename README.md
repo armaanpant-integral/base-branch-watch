@@ -71,8 +71,8 @@ Full setup details, macOS Full Disk Access / notification-permission gotchas, un
 
 **Dashboard panel:** a header ("2 need attention", "4 clear · checked 2m ago") over three tabs. Long lists scroll. Footer buttons: **Refresh** and **Add repo**.
 
-- **Repos** - a grid of one tile per watched repo, repos that need attention first. Click a tile for the same detail the menu row gives.
-- **PRs** - the same tile grid, one tile per repo whose current branch has a PR: PR number, review state (`approved`, `review pending`, ...) and a status pill (`PR ready`, the worst failing or pending check, `PR merged`, `PR closed`). Click a tile for that repo's detail.
+- **Repos** - a grid of one tile per watched repo, repos that need attention first. Click a tile for that repo's git status detail.
+- **PRs** - the same tile grid, one tile per repo whose current branch has a PR: PR number, review state (`approved`, `review pending`, ...) and a status pill (`PR ready`, or the worst problem across checks, review and mergeability, e.g. `2 failing (0/2)`, `PR merged`, `PR closed`). A PR with a problem gets an orange outline on this tab. Click a tile for that repo's git status detail.
 - **Stale** - the same tile grid, one tile per repo that has stale local branches, biggest first. Each tile shows the branch count and the first few branch names, with branches that need a look first and in orange (`deleted on remote, NOT merged`: a squash merge or lost work). Click a tile for the full list with each branch's reason.
 
 Each repo tile shows:
@@ -82,10 +82,10 @@ Each repo tile shows:
 | Colored dot | Green when the repo is fine, orange when it needs attention (an orange outline marks the tile too) |
 | Base branch | The base branch being watched (the worst-off one when a repo watches several) |
 | `↓N ↑N` | `↓` commits the base branch has that you don't, orange when above 0. `↑` your unpushed commits, blue when above 0. Grey at 0 |
-| Pill | The one thing to know: `Conflict · N files`, `Behind base`, `Diverged`, `Unpushed`, `Check failed`, or, when git is fine, your PR state (`PR ready`, the worst failing or pending check, `PR merged`, `No open PR`) |
+| Pill | The one thing to know: `Conflict · N files`, `Behind base`, `Diverged`, `Unpushed`, `Check failed`, or, when git is fine, your PR state (`PR ready`, the worst problem across checks, review and mergeability, `PR merged`, `No open PR`) |
 | Right-hand text | `PR #N` when there is a PR, otherwise `N stale` for stale branches |
 
-PR state and stale branches are informational: they colour the pill but never turn a tile orange on their own. If the panel can't be set up, the app logs why and the menu bar icon keeps working as a plain menu.
+PR state and stale branches are informational: on the Repos tab they only colour the pill, and they never change the dot, the outline, or the "need attention" count (those come from git status alone). If the panel can't be set up, the app logs why and the menu bar icon keeps working as a plain menu.
 
 **Per-repo rows** (in the right-click menu):
 

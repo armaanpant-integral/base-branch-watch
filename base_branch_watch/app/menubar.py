@@ -779,6 +779,15 @@ class BaseBranchWatchApp(rumps.App):
             self._panel_host = None
             log.append(f"[FAIL] dashboard panel install raised: {exc!r}")
 
+    def _refresh_panel(self) -> None:
+        """Re-render an open popover; its failure must not read as a poll-cycle failure."""
+        if self._panel_host is None:
+            return
+        try:
+            self._panel_host.refresh()
+        except Exception as exc:  # noqa: BLE001 - a UI rebuild bug must not abort the cycle
+            log.append(f"[FAIL] dashboard panel refresh raised: {exc!r}")
+
     def _show_stale_branches(self, repo_path: str) -> None:
         """The panel's Stale tile click: the repo's stale branches, one per line."""
         status = self.statuses.get(repo_path)
@@ -788,7 +797,7 @@ class BaseBranchWatchApp(rumps.App):
         if spec is None:
             self._show_alert(title=name, message="No stale branches.")
             return
-        self._show_alert(title=spec.title, message="\n".join(c.title for c in spec.children))
+        self._show_alert(title=name, message="\n".join(c.title for c in spec.children))
 
     def check_all(self, _sender) -> None:
         if self._checking:
@@ -830,8 +839,7 @@ class BaseBranchWatchApp(rumps.App):
                 else:
                     self._render_stale_row(status.repo_path, stale_spec)
             self._maybe_check_for_update()
-            if self._panel_host is not None:
-                self._panel_host.refresh()
+            self._refresh_panel()
         except Exception as exc:  # noqa: BLE001 - top-level poll-cycle guard, see CR-04
             # Never let a single bad cycle kill the whole polling loop (the
             # "never raises" convention core/git_ops.py established). Log
