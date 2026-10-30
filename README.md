@@ -67,9 +67,21 @@ Full setup details, macOS Full Disk Access / notification-permission gotchas, un
 
 ## Using it
 
-Click the menu bar icon to see watched repos and their status.
+**Click** the menu bar icon to open the dashboard panel. **Right-click** (or control-click, or **More…** in the panel footer) opens the full menu with every action.
 
-**Per-repo rows:**
+**Dashboard panel:** a header ("2 need attention", "4 clear · checked 2m ago") over a grid of one tile per watched repo, repos that need attention first. Click a tile for the same detail the menu row gives. Each tile shows:
+
+| On the tile | It means |
+|---|---|
+| Colored dot | Green when the repo is fine, orange when it needs attention (an orange outline marks the tile too) |
+| Base branch | The base branch being watched (the worst-off one when a repo watches several) |
+| `↓N ↑N` | `↓` commits the base branch has that you don't, orange when above 0. `↑` your unpushed commits, blue when above 0. Grey at 0 |
+| Pill | The one thing to know: `Conflict · N files`, `Behind base`, `Diverged`, `Unpushed`, `Check failed`, or, when git is fine, your PR state (`PR ready`, the worst failing or pending check, `PR merged`, `No open PR`) |
+| Right-hand text | `PR #N` when there is a PR, otherwise `N stale` for stale branches |
+
+PR state and stale branches are informational: they colour the pill but never turn a tile orange on their own. If the panel can't be set up, the app logs why and the menu bar icon keeps working as a plain menu.
+
+**Per-repo rows** (in the right-click menu):
 
 | You see | It means |
 |---|---|
@@ -86,7 +98,7 @@ Click the menu bar icon to see watched repos and their status.
 | ⚠️ PR status - ... | `gh` isn't installed / isn't logged in / is rate-limited - this never blocks the git-status row above it |
 | 🧹 N stale branches | Local branches you can likely delete (click to expand). Each is labelled: *remote deleted, merged* (safe), *remote deleted, NOT merged (check before deleting)* (a squash merge or lost work, so look first), or *merged, remote branch still exists*. Never lists the checked-out branch, a watched base branch, a branch with no upstream, or one tracking a remote other than `origin`. If `origin` can't be read that cycle the row simply disappears (the app log notes it) rather than guessing |
 
-**Menu actions:**
+**Menu actions** (right-click the icon, or **More…** in the panel; the panel also has Refresh and Add repo buttons):
 
 - **Add Repo…** - pick a repo folder; base branch is auto-detected from `origin`'s default, editable
 - **Edit Base Branch(es)** - change a repo's watched base branch(es) without removing and re-adding it
