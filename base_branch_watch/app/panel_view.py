@@ -13,6 +13,7 @@ from collections.abc import Callable
 
 import objc
 from AppKit import (
+    NSApplication,
     NSBox,
     NSButton,
     NSColor,
@@ -271,6 +272,9 @@ class DashboardPanel:
         if self.is_shown:
             self._popover.close()
             return
+        # An accessory (menu bar only) app is never active on its own; without this
+        # the transient popover can dismiss itself as soon as it opens.
+        NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
         self._popover.showRelativeToRect_ofView_preferredEdge_(
             anchor_view.bounds(), anchor_view, _NS_MIN_Y_EDGE
         )
