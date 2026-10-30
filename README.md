@@ -7,7 +7,7 @@ A macOS menu-bar companion that keeps you honest about two things you'll otherwi
 
 It watches your repos in the background, shows live status in the menu bar, warns you before a real merge conflict happens, and - once your PR is open - shows you its checks/review/mergeable state without leaving the menu.
 
-![base-branch-watch menu bar preview - illustrative example, not a live screenshot](docs/menubar-preview.svg)
+![base-branch-watch dashboard panel preview - illustrative example, not a live screenshot](docs/menubar-preview.svg)
 
 ## What it does
 
