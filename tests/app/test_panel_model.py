@@ -222,6 +222,61 @@ def test_empty_panel_has_no_tiles_and_zero_counts():
     assert (panel.attention_count, panel.clear_count) == (0, 0)
 
 
+def test_prs_lists_only_repos_with_a_pr_attention_first_then_name():
+    a = _repo("a-ready", branches=[_branch()])
+    b = _repo("b-failing", branches=[_branch()])
+    c = _repo("c-nopr", branches=[_branch()])
+    d = _repo("d-merged", branches=[_branch()])
+    prs = {
+        a.repo_path: _open_pr(1),
+        b.repo_path: _open_pr(2, checks_pass=0, checks_fail=2, checks_total=2),
+        c.repo_path: PrStatus(kind=PrStatusKind.NO_PR, current_branch="main"),
+        d.repo_path: PrStatus(kind=PrStatusKind.MERGED, number=41),
+    }
+
+    panel = build_panel([a, b, c, d], prs, {})
+
+    assert [row.repo_name for row in panel.prs] == ["b-failing", "a-ready", "d-merged"]
+    failing, ready, merged = panel.prs
+    assert (failing.number, failing.pill, failing.pill_tone) == (
+        2,
+        "2 failing (0/2)",
+        PillTone.ATTENTION,
+    )
+    assert failing.detail == "2 failing (0/2) · approved · mergeable"
+    assert (ready.pill, ready.pill_tone) == ("PR ready", PillTone.OK)
+    assert (merged.pill, merged.detail) == ("PR merged", "")
+
+
+def test_prs_empty_when_no_repo_has_a_pr():
+    status = _repo("r", branches=[_branch()])
+
+    assert build_panel([status], {}, {}).prs == []
+
+
+def test_stale_groups_are_per_repo_largest_first_with_kind_labels():
+    small = _repo("a-small", branches=[_branch()])
+    big = _repo("b-big", branches=[_branch()])
+    none = _repo("c-none", branches=[_branch()])
+    stale = {
+        small.repo_path: [StaleBranch(name="x", kind=StaleKind.MERGED)],
+        big.repo_path: [
+            StaleBranch(name="old-1", kind=StaleKind.GONE_MERGED),
+            StaleBranch(name="old-2", kind=StaleKind.GONE_UNMERGED),
+        ],
+    }
+
+    panel = build_panel([small, big, none], {}, stale)
+
+    assert [g.repo_name for g in panel.stale_groups] == ["b-big", "a-small"]
+    first = panel.stale_groups[0]
+    assert [b.name for b in first.branches] == ["old-1", "old-2"]
+    assert first.branches[0].label == "deleted on remote, merged"
+    assert first.branches[0].needs_review is False
+    assert first.branches[1].label == "deleted on remote, NOT merged"
+    assert first.branches[1].needs_review is True
+
+
 def test_module_is_pure_no_appkit_or_rumps_import():
     source = open(panel_model_module.__file__, encoding="utf-8").read()
 

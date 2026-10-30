@@ -17,8 +17,16 @@ from base_branch_watch.core.models import (
     RepoStatus,
     Severity,
     StaleBranch,
+    StaleKind,
     StatusKind,
 )
+
+# Shorter than the menu's wording so the label fits beside the branch name.
+_STALE_LABELS = {
+    StaleKind.GONE_MERGED: "deleted on remote, merged",
+    StaleKind.GONE_UNMERGED: "deleted on remote, NOT merged",
+    StaleKind.MERGED: "merged, still on remote",
+}
 
 
 class PillTone(Enum):
@@ -41,8 +49,35 @@ class RepoTile:
 
 
 @dataclass(frozen=True)
+class PrRow:
+    repo_path: str
+    repo_name: str
+    number: int | None
+    pill: str
+    pill_tone: PillTone
+    detail: str
+    """Checks / review / mergeable summary; empty unless the PR is open."""
+
+
+@dataclass(frozen=True)
+class StaleRow:
+    name: str
+    label: str
+    needs_review: bool
+    """True when the branch holds commits the base lacks: look before deleting."""
+
+
+@dataclass(frozen=True)
+class StaleGroup:
+    repo_name: str
+    branches: list[StaleRow]
+
+
+@dataclass(frozen=True)
 class PanelModel:
     tiles: list[RepoTile]
+    prs: list[PrRow]
+    stale_groups: list[StaleGroup]
     attention_count: int
     clear_count: int
     open_pr_count: int
@@ -109,6 +144,52 @@ def _tile(status: RepoStatus, pr_status: PrStatus | None, stale: list[StaleBranc
     )
 
 
+def _pr_row(status: RepoStatus, pr_status: PrStatus) -> PrRow:
+    pill, tone = _pr_pill(pr_status)
+    is_open = pr_status.kind == PrStatusKind.OPEN
+    return PrRow(
+        repo_path=status.repo_path,
+        repo_name=status.name,
+        number=pr_status.number,
+        pill=pill,
+        pill_tone=tone,
+        detail=menu_builder.pr_detail(pr_status) if is_open else "",
+    )
+
+
+def _pr_rows(statuses: list[RepoStatus], pr_statuses: dict[str, PrStatus]) -> list[PrRow]:
+    rows = [
+        _pr_row(status, pr_statuses[status.repo_path])
+        for status in statuses
+        if status.repo_path in pr_statuses
+        and pr_statuses[status.repo_path].kind != PrStatusKind.NO_PR
+    ]
+    rows.sort(key=lambda row: (row.pill_tone != PillTone.ATTENTION, row.repo_name))
+    return rows
+
+
+def _stale_groups(
+    statuses: list[RepoStatus], stale_statuses: dict[str, list[StaleBranch]]
+) -> list[StaleGroup]:
+    groups = [
+        StaleGroup(
+            repo_name=status.name,
+            branches=[
+                StaleRow(
+                    name=branch.name,
+                    label=_STALE_LABELS[branch.kind],
+                    needs_review=branch.kind == StaleKind.GONE_UNMERGED,
+                )
+                for branch in stale_statuses[status.repo_path]
+            ],
+        )
+        for status in statuses
+        if stale_statuses.get(status.repo_path)
+    ]
+    groups.sort(key=lambda group: (-len(group.branches), group.repo_name))
+    return groups
+
+
 def build_panel(
     statuses: list[RepoStatus],
     pr_statuses: dict[str, PrStatus],
@@ -122,6 +203,8 @@ def build_panel(
     attention = sum(1 for tile in tiles if tile.severity > Severity.OK)
     return PanelModel(
         tiles=tiles,
+        prs=_pr_rows(statuses, pr_statuses),
+        stale_groups=_stale_groups(statuses, stale_statuses),
         attention_count=attention,
         clear_count=len(tiles) - attention,
         open_pr_count=sum(1 for pr in pr_statuses.values() if pr.kind == PrStatusKind.OPEN),

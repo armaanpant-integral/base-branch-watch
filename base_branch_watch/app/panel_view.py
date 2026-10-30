@@ -13,7 +13,6 @@ from collections.abc import Callable
 
 import objc
 from AppKit import (
-    NSApplication,
     NSBox,
     NSButton,
     NSColor,
@@ -23,22 +22,40 @@ from AppKit import (
     NSMakeRect,
     NSMutableAttributedString,
     NSPopover,
+    NSScrollView,
+    NSSegmentedControl,
     NSTextField,
     NSView,
     NSViewController,
+    NSWindowCollectionBehaviorCanJoinAllSpaces,
+    NSWindowCollectionBehaviorFullScreenAuxiliary,
 )
 from Foundation import NSObject
 
-from base_branch_watch.app.panel_model import PanelModel, PillTone, RepoTile
+from base_branch_watch.app.panel_model import (
+    PanelModel,
+    PillTone,
+    PrRow,
+    RepoTile,
+    StaleGroup,
+)
 from base_branch_watch.core.models import Severity
 
-PANEL_WIDTH = 440
-PADDING = 14
-GAP = 10
-TILE_HEIGHT = 86
-HEADER_HEIGHT = 30
-FOOTER_HEIGHT = 34
-TILE_WIDTH = (PANEL_WIDTH - 2 * PADDING - GAP) // 2
+PANEL_WIDTH = 520
+PADDING = 20
+GAP = 14
+TILE_HEIGHT = 116
+HEADER_HEIGHT = 44
+FOOTER_HEIGHT = 44
+TABS_HEIGHT = 30
+MAX_CONTENT_HEIGHT = 470
+CONTENT_WIDTH = PANEL_WIDTH - 2 * PADDING
+TILE_WIDTH = (CONTENT_WIDTH - GAP) // 2
+TILE_WIDTH_PAD = 14
+PR_ROW_HEIGHT = 76
+STALE_HEADER_HEIGHT = 40
+STALE_ROW_HEIGHT = 28
+TAB_TITLES = ("Repos", "PRs", "Stale")
 
 _NS_BOX_CUSTOM = 4
 _NS_NO_BORDER = 0
@@ -126,7 +143,7 @@ def _pill_colors(tone):
 
 def _arrows(behind, unpushed):
     text = NSMutableAttributedString.alloc().initWithString_(f"↓{behind}  ↑{unpushed}")
-    font = NSFont.monospacedDigitSystemFontOfSize_weight_(11, _FONT_SEMIBOLD)
+    font = NSFont.monospacedDigitSystemFontOfSize_weight_(14, _FONT_SEMIBOLD)
     behind_color = NSColor.systemOrangeColor() if behind else NSColor.tertiaryLabelColor()
     ahead_color = NSColor.systemBlueColor() if unpushed else NSColor.tertiaryLabelColor()
     split = len(f"↓{behind}")
@@ -149,25 +166,26 @@ def _tile_view(tile: RepoTile, tag: int, target) -> NSView:
     _place(background, root, 0, 0, TILE_WIDTH, TILE_HEIGHT)
     inner = root
 
-    _place(_dot(tile.severity), inner, 11, 14, 9, 9)
-    name = _label(tile.name, 13, _FONT_SEMIBOLD)
-    _place(name, inner, 26, 9, TILE_WIDTH - 36, 17)
-    base = _label(tile.base or " ", 10.5, color=NSColor.secondaryLabelColor(), mono=True)
-    _place(base, inner, 26, 27, TILE_WIDTH - 36, 14)
+    text_x = TILE_WIDTH_PAD + 18
+    _place(_dot(tile.severity), inner, TILE_WIDTH_PAD, 19, 10, 10)
+    name = _label(tile.name, 16, _FONT_SEMIBOLD)
+    _place(name, inner, text_x, 14, TILE_WIDTH - text_x - TILE_WIDTH_PAD, 21)
+    base = _label(tile.base or " ", 12.5, color=NSColor.secondaryLabelColor(), mono=True)
+    _place(base, inner, text_x, 38, TILE_WIDTH - text_x - TILE_WIDTH_PAD, 17)
 
-    arrows = _label("", 11)
+    arrows = _label("", 14)
     arrows.setAttributedStringValue_(_arrows(tile.behind, tile.unpushed))
-    _place(arrows, inner, 11, 46, 80, 14)
-    detail = _label(tile.detail, 11, color=NSColor.secondaryLabelColor(), align=_NS_ALIGN_RIGHT)
-    _place(detail, inner, 90, 46, TILE_WIDTH - 101, 14)
+    _place(arrows, inner, TILE_WIDTH_PAD, 64, 100, 18)
+    detail = _label(tile.detail, 13, color=NSColor.secondaryLabelColor(), align=_NS_ALIGN_RIGHT)
+    _place(detail, inner, 110, 64, TILE_WIDTH - 110 - TILE_WIDTH_PAD, 18)
 
     fill, text_color = _pill_colors(tile.pill_tone)
-    pill_label = _label(tile.pill, 10.5, _FONT_SEMIBOLD, text_color)
+    pill_label = _label(tile.pill, 12.5, _FONT_SEMIBOLD, text_color)
     pill_label.sizeToFit()
-    pill_w = min(pill_label.frame().size.width + 14, TILE_WIDTH - 22)
-    pill = _box(fill, 8)
-    _place(pill, inner, 11, 64, pill_w, 16)
-    _place(pill_label, pill.contentView(), 7, 1, pill_w - 14, 14)
+    pill_w = min(pill_label.frame().size.width + 20, TILE_WIDTH - 2 * TILE_WIDTH_PAD)
+    pill = _box(fill, 10)
+    _place(pill, inner, TILE_WIDTH_PAD, 88, pill_w, 20)
+    _place(pill_label, pill.contentView(), 10, 1, pill_w - 20, 17)
 
     click = NSButton.alloc().init()
     click.setTransparent_(True)
@@ -176,6 +194,86 @@ def _tile_view(tile: RepoTile, tag: int, target) -> NSView:
     click.setAction_("fire:")
     _place(click, inner, 0, 0, TILE_WIDTH, TILE_HEIGHT)
     return root
+
+
+def _card(width, height, alert=False):
+    """A flipped container with a rounded NSBox background (NSBox's own contentView
+    is not flipped, so content is laid out top-down in this root instead)."""
+    root = _FlippedView.alloc().initWithFrame_(NSMakeRect(0, 0, width, height))
+    border = NSColor.systemOrangeColor() if alert else NSColor.separatorColor()
+    background = _box(NSColor.controlBackgroundColor(), 10, border, 1.5 if alert else 0.5)
+    _place(background, root, 0, 0, width, height)
+    return root
+
+
+def _pill(parent, text, tone, x, y, max_width):
+    fill, text_color = _pill_colors(tone)
+    label = _label(text, 12.5, _FONT_SEMIBOLD, text_color)
+    label.sizeToFit()
+    width = min(label.frame().size.width + 20, max_width)
+    pill = _box(fill, 10)
+    _place(pill, parent, x, y, width, 20)
+    _place(label, pill.contentView(), 10, 1, width - 20, 17)
+    return width
+
+
+def _clickable(parent, tag, target, width, height):
+    click = NSButton.alloc().init()
+    click.setTransparent_(True)
+    click.setTag_(tag)
+    click.setTarget_(target)
+    click.setAction_("fire:")
+    _place(click, parent, 0, 0, width, height)
+
+
+def _pr_card(row: PrRow, tag: int, target) -> NSView:
+    card = _card(CONTENT_WIDTH, PR_ROW_HEIGHT)
+    pad = TILE_WIDTH_PAD
+    number = f"PR #{row.number}" if row.number is not None else ""
+    _place(_label(row.repo_name, 16, _FONT_SEMIBOLD), card, pad, 12, CONTENT_WIDTH - 130, 21)
+    right = _label(number, 13, color=NSColor.secondaryLabelColor(), align=_NS_ALIGN_RIGHT)
+    _place(right, card, CONTENT_WIDTH - pad - 100, 14, 100, 18)
+    pill_w = _pill(card, row.pill, row.pill_tone, pad, 42, CONTENT_WIDTH - 2 * pad)
+    if row.detail:
+        detail = _label(row.detail, 12.5, color=NSColor.secondaryLabelColor())
+        x = pad + pill_w + 10
+        _place(detail, card, x, 44, CONTENT_WIDTH - x - pad, 17)
+    _clickable(card, tag, target, CONTENT_WIDTH, PR_ROW_HEIGHT)
+    return card
+
+
+def _stale_card(group: StaleGroup) -> NSView:
+    height = STALE_HEADER_HEIGHT + len(group.branches) * STALE_ROW_HEIGHT + 10
+    card = _card(CONTENT_WIDTH, height)
+    pad = TILE_WIDTH_PAD
+    _place(_label(group.repo_name, 16, _FONT_SEMIBOLD), card, pad, 12, CONTENT_WIDTH - 140, 21)
+    count = len(group.branches)
+    total = _label(
+        f"{count} branch{'' if count == 1 else 'es'}",
+        13,
+        color=NSColor.secondaryLabelColor(),
+        align=_NS_ALIGN_RIGHT,
+    )
+    _place(total, card, CONTENT_WIDTH - pad - 110, 14, 110, 18)
+    name_w = int(CONTENT_WIDTH * 0.42)
+    for index, branch in enumerate(group.branches):
+        y = STALE_HEADER_HEIGHT + index * STALE_ROW_HEIGHT
+        name = _label(branch.name, 12.5, color=NSColor.labelColor(), mono=True)
+        _place(name, card, pad, y, name_w, 17)
+        color = (
+            NSColor.systemOrangeColor() if branch.needs_review else NSColor.secondaryLabelColor()
+        )
+        label = _label(branch.label, 12.5, color=color, align=_NS_ALIGN_RIGHT)
+        x = pad + name_w + 8
+        _place(label, card, x, y, CONTENT_WIDTH - x - pad, 17)
+    return card
+
+
+def _empty_state(text: str) -> NSView:
+    view = _FlippedView.alloc().initWithFrame_(NSMakeRect(0, 0, CONTENT_WIDTH, 120))
+    label = _label(text, 14, color=NSColor.secondaryLabelColor(), align=2)
+    _place(label, view, 0, 48, CONTENT_WIDTH, 20)
+    return view
 
 
 def _checked_ago(seconds: float | None) -> str:
@@ -193,18 +291,19 @@ class DashboardPanel:
         on_repo_click: Callable[[str], None],
         on_refresh: Callable[[], None],
         on_add_repo: Callable[[], None],
-        on_more: Callable[[object], None],
     ) -> None:
         self._on_repo_click = on_repo_click
-        self._on_more = on_more
-        self._repo_paths: list[str] = []
+        self._on_refresh = on_refresh
+        self._on_add_repo = on_add_repo
         self._callbacks: list[Callable] = []
         self._target = ActionTarget.alloc().initWithCallbacks_(self._callbacks)
         self._popover = NSPopover.alloc().init()
         self._popover.setBehavior_(_NS_POPOVER_TRANSIENT)
         self._controller = NSViewController.alloc().init()
         self._popover.setContentViewController_(self._controller)
-        self._actions = {"refresh": on_refresh, "add": on_add_repo}
+        self._tab = 0
+        self._model: PanelModel | None = None
+        self._seconds_since_check: float | None = None
 
     @property
     def is_shown(self) -> bool:
@@ -214,67 +313,151 @@ class DashboardPanel:
         self._popover.close()
 
     def update(self, model: PanelModel, seconds_since_check: float | None) -> None:
-        """Rebuild the content view from `model` (cheap: a handful of tiles)."""
-        self._callbacks.clear()
-        self._repo_paths = [tile.repo_path for tile in model.tiles]
-        for repo_path in self._repo_paths:
-            self._callbacks.append(lambda _s, path=repo_path: self._on_repo_click(path))
-        tile_count = len(self._callbacks)
-        refresh_tag, add_tag, more_tag = (tile_count, tile_count + 1, tile_count + 2)
-        self._callbacks.append(lambda _s: self._actions["refresh"]())
-        self._callbacks.append(lambda _s: self._actions["add"]())
-        self._callbacks.append(self._on_more)
+        """Rebuild the content from `model` (cheap: a handful of tiles and rows)."""
+        self._model = model
+        self._seconds_since_check = seconds_since_check
+        self._rebuild()
 
-        rows = math.ceil(tile_count / 2)
-        grid_height = rows * TILE_HEIGHT + max(rows - 1, 0) * GAP
-        height = PADDING + HEADER_HEIGHT + grid_height + GAP + FOOTER_HEIGHT + PADDING // 2
+    def _register(self, callback: Callable) -> int:
+        self._callbacks.append(callback)
+        return len(self._callbacks) - 1
+
+    def _select_tab(self, sender) -> None:
+        self._tab = int(sender.selectedSegment())
+        self._rebuild()
+
+    def _rebuild(self) -> None:
+        model = self._model
+        if model is None:
+            return
+        self._callbacks.clear()
+        content, content_height = self._build_content(model)
+        viewport = min(content_height, MAX_CONTENT_HEIGHT)
+        top = PADDING + HEADER_HEIGHT + TABS_HEIGHT + GAP
+        height = top + viewport + GAP + FOOTER_HEIGHT + PADDING // 2
         root = _FlippedView.alloc().initWithFrame_(NSMakeRect(0, 0, PANEL_WIDTH, height))
 
-        self._build_header(root, model, seconds_since_check)
-        self._build_grid(root, model)
-        footer_y = height - FOOTER_HEIGHT - PADDING // 2
-        self._build_footer(root, footer_y, refresh_tag, add_tag, more_tag)
+        self._build_header(root, model)
+        self._build_tabs(root, model)
+        self._place_scrolling(root, content, content_height, top, viewport)
+        self._build_footer(root, height - FOOTER_HEIGHT - PADDING // 2)
 
         self._controller.setView_(root)
         self._popover.setContentSize_((PANEL_WIDTH, height))
 
-    def _build_header(self, root, model, seconds_since_check):
-        title = f"{model.attention_count} need attention" if model.attention_count else "All clear"
-        _place(_label(title, 15, _FONT_BOLD), root, PADDING, PADDING, 230, 20)
-        sub = f"{model.clear_count} clear · {_checked_ago(seconds_since_check)}"
-        subtitle = _label(sub, 11.5, color=NSColor.secondaryLabelColor(), align=_NS_ALIGN_RIGHT)
-        _place(subtitle, root, PANEL_WIDTH - PADDING - 190, PADDING + 2, 190, 16)
+    def _build_content(self, model: PanelModel) -> tuple[NSView, int]:
+        if self._tab == 1:
+            return self._build_prs(model)
+        if self._tab == 2:
+            return self._build_stale(model)
+        return self._build_grid(model)
 
-    def _build_grid(self, root, model):
-        top = PADDING + HEADER_HEIGHT
+    def _build_grid(self, model: PanelModel) -> tuple[NSView, int]:
+        if not model.tiles:
+            return _empty_state("No repos watched yet"), 120
+        rows = math.ceil(len(model.tiles) / 2)
+        height = rows * TILE_HEIGHT + (rows - 1) * GAP
+        grid = _FlippedView.alloc().initWithFrame_(NSMakeRect(0, 0, CONTENT_WIDTH, height))
         for index, tile in enumerate(model.tiles):
-            column, row = index % 2, index // 2
-            x = PADDING + column * (TILE_WIDTH + GAP)
-            y = top + row * (TILE_HEIGHT + GAP)
-            _place(_tile_view(tile, index, self._target), root, x, y, TILE_WIDTH, TILE_HEIGHT)
+            repo_path = tile.repo_path
+            tag = self._register(lambda _s, path=repo_path: self._on_repo_click(path))
+            x = (index % 2) * (TILE_WIDTH + GAP)
+            y = (index // 2) * (TILE_HEIGHT + GAP)
+            _place(_tile_view(tile, tag, self._target), grid, x, y, TILE_WIDTH, TILE_HEIGHT)
+        return grid, height
 
-    def _build_footer(self, root, y, refresh_tag, add_tag, more_tag):
+    def _build_prs(self, model: PanelModel) -> tuple[NSView, int]:
+        if not model.prs:
+            return _empty_state("No pull requests on watched branches"), 120
+        height = len(model.prs) * PR_ROW_HEIGHT + (len(model.prs) - 1) * GAP
+        column = _FlippedView.alloc().initWithFrame_(NSMakeRect(0, 0, CONTENT_WIDTH, height))
+        for index, row in enumerate(model.prs):
+            repo_path = row.repo_path
+            tag = self._register(lambda _s, path=repo_path: self._on_repo_click(path))
+            y = index * (PR_ROW_HEIGHT + GAP)
+            _place(_pr_card(row, tag, self._target), column, 0, y, CONTENT_WIDTH, PR_ROW_HEIGHT)
+        return column, height
+
+    def _build_stale(self, model: PanelModel) -> tuple[NSView, int]:
+        if not model.stale_groups:
+            return _empty_state("No stale branches"), 120
+        cards = [_stale_card(group) for group in model.stale_groups]
+        height = sum(card.frame().size.height for card in cards) + (len(cards) - 1) * GAP
+        column = _FlippedView.alloc().initWithFrame_(NSMakeRect(0, 0, CONTENT_WIDTH, height))
+        y = 0.0
+        for card in cards:
+            card_height = card.frame().size.height
+            _place(card, column, 0, y, CONTENT_WIDTH, card_height)
+            y += card_height + GAP
+        return column, int(height)
+
+    def _build_header(self, root, model: PanelModel) -> None:
+        title = f"{model.attention_count} need attention" if model.attention_count else "All clear"
+        _place(_label(title, 20, _FONT_BOLD), root, PADDING, PADDING, 280, 26)
+        sub = f"{model.clear_count} clear · {_checked_ago(self._seconds_since_check)}"
+        subtitle = _label(sub, 13.5, color=NSColor.secondaryLabelColor(), align=_NS_ALIGN_RIGHT)
+        _place(subtitle, root, PANEL_WIDTH - PADDING - 220, PADDING + 5, 220, 18)
+
+    def _build_tabs(self, root, model: PanelModel) -> None:
+        counts = (len(model.tiles), len(model.prs), model.stale_total)
+        tabs = NSSegmentedControl.alloc().initWithFrame_(NSMakeRect(0, 0, CONTENT_WIDTH, 28))
+        tabs.setSegmentCount_(len(TAB_TITLES))
+        for index, (title, count) in enumerate(zip(TAB_TITLES, counts)):
+            tabs.setLabel_forSegment_(f"{title}  {count}", index)
+        tabs.setSelectedSegment_(self._tab)
+        tabs.setFont_(NSFont.systemFontOfSize_weight_(13, _FONT_SEMIBOLD))
+        tabs.setTag_(self._register(self._select_tab))
+        tabs.setTarget_(self._target)
+        tabs.setAction_("fire:")
+        _place(tabs, root, PADDING, PADDING + HEADER_HEIGHT, CONTENT_WIDTH, 28)
+
+    @staticmethod
+    def _place_scrolling(root, content, content_height, top, viewport) -> None:
+        scroll = NSScrollView.alloc().initWithFrame_(
+            NSMakeRect(PADDING, top, CONTENT_WIDTH, viewport)
+        )
+        scroll.setHasVerticalScroller_(True)
+        scroll.setAutohidesScrollers_(True)
+        scroll.setDrawsBackground_(False)
+        scroll.setBorderType_(_NS_NO_BORDER)
+        content.setFrame_(NSMakeRect(0, 0, CONTENT_WIDTH, content_height))
+        scroll.setDocumentView_(content)
+        root.addSubview_(scroll)
+
+    def _build_footer(self, root, y: float) -> None:
         rule = _box(NSColor.separatorColor(), 0)
-        _place(rule, root, PADDING, y, PANEL_WIDTH - 2 * PADDING, 1)
-        for tag, title, x in (
-            (refresh_tag, "Refresh", PADDING),
-            (add_tag, "Add repo", PADDING + 70),
-            (more_tag, "More…", PANEL_WIDTH - PADDING - 60),
+        _place(rule, root, PADDING, y, CONTENT_WIDTH, 1)
+        for title, callback, x in (
+            ("Refresh", lambda _s: self._on_refresh(), PADDING),
+            ("Add repo", lambda _s: self._on_add_repo(), PADDING + 96),
         ):
             button = NSButton.buttonWithTitle_target_action_(title, self._target, "fire:")
             button.setBordered_(False)
-            button.setTag_(tag)
+            button.setFont_(NSFont.systemFontOfSize_weight_(14, _FONT_SEMIBOLD))
+            button.setTag_(self._register(callback))
             button.setContentTintColor_(NSColor.controlAccentColor())
-            _place(button, root, x, y + 6, 66, 22)
+            _place(button, root, x, y + 10, 90, 26)
 
     def show(self, anchor_view) -> None:
         """Show relative to the status-item button; toggles closed if already open."""
         if self.is_shown:
             self._popover.close()
             return
-        # An accessory (menu bar only) app is never active on its own; without this
-        # the transient popover can dismiss itself as soon as it opens.
-        NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
         self._popover.showRelativeToRect_ofView_preferredEdge_(
             anchor_view.bounds(), anchor_view, _NS_MIN_Y_EDGE
         )
+        self._follow_active_space()
+
+    def _follow_active_space(self) -> None:
+        """Let the popover appear over whatever space or full-screen app is in front.
+
+        Without this the window belongs to the desktop space, so clicking the icon
+        while another app is full screen opens nothing visible there (and activating
+        the app instead would yank the user back to the desktop).
+        """
+        window = self._controller.view().window()
+        if window is not None:
+            window.setCollectionBehavior_(
+                NSWindowCollectionBehaviorCanJoinAllSpaces
+                | NSWindowCollectionBehaviorFullScreenAuxiliary
+            )

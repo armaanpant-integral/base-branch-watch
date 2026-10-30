@@ -42,7 +42,6 @@ class PanelHost:
             on_repo_click=lambda path: self._close_then(on_repo_click, path),
             on_refresh=on_refresh,
             on_add_repo=lambda: self._close_then(on_add_repo),
-            on_more=lambda _sender: self._pop_menu(),
         )
         self._target = ActionTarget.alloc().initWithCallbacks_([self._on_status_click])
 

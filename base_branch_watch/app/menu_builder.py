@@ -235,6 +235,17 @@ def pr_headline(pr_status: PrStatus) -> tuple[str, str]:
     )
 
 
+def pr_detail(pr_status: PrStatus) -> str:
+    """The one-line Checks / Review / Mergeable summary of an OPEN PR."""
+    return " · ".join(
+        [
+            _checks_segment(pr_status)[1],
+            _review_segment(pr_status)[1],
+            _mergeable_segment(pr_status)[1],
+        ]
+    )
+
+
 def _pr_row(pr_status: PrStatus, repo_name: str) -> MenuItemSpec:
     """D-05/D-06/D-07/D-02/D-09/D-10/D-03 — the second, independent
     PR-status row per repo.
