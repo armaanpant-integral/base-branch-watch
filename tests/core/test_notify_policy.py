@@ -11,9 +11,7 @@ from base_branch_watch.core.models import BranchStatus, RepoStatus, StatusKind
 
 
 def _base(base="main", kind=StatusKind.BEHIND, sha="sha1", behind=2, **kw):
-    return BranchStatus(
-        base=base, behind=behind, ahead_of_base=0, kind=kind, head_sha=sha, **kw
-    )
+    return BranchStatus(base=base, behind=behind, ahead_of_base=0, kind=kind, head_sha=sha, **kw)
 
 
 def _repo(path="/repo", bases=None, unpushed=0, failure_reason=None):
@@ -106,9 +104,7 @@ def test_notifying_records_every_resolved_base_sha_not_just_the_trigger():
 
 def test_state_is_scoped_per_repo():
     state = {"/repo-a": {"main": "sha1"}}
-    decision = notify_policy.decide_digest(
-        state, [_repo("/repo-a"), _repo("/repo-b")]
-    )
+    decision = notify_policy.decide_digest(state, [_repo("/repo-a"), _repo("/repo-b")])
     assert _paths(decision) == ["/repo-b"]
 
 

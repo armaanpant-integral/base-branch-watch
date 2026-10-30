@@ -99,9 +99,7 @@ def test_unrelated_histories_are_undeterminable_not_clean(
     assert verdict.paths_determinable is False
 
 
-def test_local_ref_is_honoured_instead_of_head(
-    fixture_repos_conflict_overlap, default_branch_name
-):
+def test_local_ref_is_honoured_instead_of_head(fixture_repos_conflict_overlap, default_branch_name):
     """The hook assesses the pushed SHA, not the checked-out HEAD."""
     _origin, clone_path = fixture_repos_conflict_overlap
 

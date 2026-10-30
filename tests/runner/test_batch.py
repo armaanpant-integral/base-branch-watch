@@ -37,10 +37,11 @@ def test_check_all_calls_check_repo_once_per_repo():
         RepoConfig(repo_path="/tmp/r2", base_branches=["main"]),
         RepoConfig(repo_path="/tmp/r3", base_branches=["main"]),
     ]
-    with patch(
-        "base_branch_watch.runner.batch.base_verdict.check_repo", side_effect=_fake_status
-    ) as mock_check, patch(
-        "base_branch_watch.runner.batch.pr_status.check_pr", side_effect=_fake_pr_status
+    with (
+        patch(
+            "base_branch_watch.runner.batch.base_verdict.check_repo", side_effect=_fake_status
+        ) as mock_check,
+        patch("base_branch_watch.runner.batch.pr_status.check_pr", side_effect=_fake_pr_status),
     ):
         results, pr_statuses = batch.check_all(repos)
 
@@ -51,11 +52,11 @@ def test_check_all_calls_check_repo_once_per_repo():
 
 def test_check_all_bounds_worker_count_to_min_of_max_workers_and_repo_count():
     repos = [RepoConfig(repo_path=f"/tmp/r{i}", base_branches=["main"]) for i in range(3)]
-    with patch(
-        "base_branch_watch.runner.batch.base_verdict.check_repo", side_effect=_fake_status
-    ), patch(
-        "base_branch_watch.runner.batch.pr_status.check_pr", side_effect=_fake_pr_status
-    ), patch("base_branch_watch.runner.batch.ThreadPoolExecutor") as mock_pool_cls:
+    with (
+        patch("base_branch_watch.runner.batch.base_verdict.check_repo", side_effect=_fake_status),
+        patch("base_branch_watch.runner.batch.pr_status.check_pr", side_effect=_fake_pr_status),
+        patch("base_branch_watch.runner.batch.ThreadPoolExecutor") as mock_pool_cls,
+    ):
         mock_pool_cls.return_value.__enter__.return_value.submit.return_value = None
         # submit() returning None breaks as_completed; instead, verify only the
         # constructor's max_workers argument here (isolated from execution).
@@ -69,10 +70,11 @@ def test_check_all_bounds_worker_count_to_min_of_max_workers_and_repo_count():
 
 def test_check_all_bounds_worker_count_never_exceeds_max_workers():
     repos = [RepoConfig(repo_path=f"/tmp/r{i}", base_branches=["main"]) for i in range(20)]
-    with patch(
-        "base_branch_watch.runner.batch.base_verdict.check_repo", side_effect=_fake_status
-    ) as mock_check, patch(
-        "base_branch_watch.runner.batch.pr_status.check_pr", side_effect=_fake_pr_status
+    with (
+        patch(
+            "base_branch_watch.runner.batch.base_verdict.check_repo", side_effect=_fake_status
+        ) as mock_check,
+        patch("base_branch_watch.runner.batch.pr_status.check_pr", side_effect=_fake_pr_status),
     ):
         results, pr_statuses = batch.check_all(repos, max_workers=8)
 
@@ -92,10 +94,9 @@ def test_check_all_isolates_per_repo_exception_as_check_failed_status():
             raise RuntimeError("boom")
         return _fake_status(repo)
 
-    with patch(
-        "base_branch_watch.runner.batch.base_verdict.check_repo", side_effect=side_effect
-    ), patch(
-        "base_branch_watch.runner.batch.pr_status.check_pr", side_effect=_fake_pr_status
+    with (
+        patch("base_branch_watch.runner.batch.base_verdict.check_repo", side_effect=side_effect),
+        patch("base_branch_watch.runner.batch.pr_status.check_pr", side_effect=_fake_pr_status),
     ):
         results, pr_statuses = batch.check_all(repos)
 
@@ -126,9 +127,10 @@ def test_check_all_isolates_per_repo_pr_status_exception_as_check_failed():
             raise RuntimeError("gh exploded")
         return _fake_pr_status(repo_path)
 
-    with patch(
-        "base_branch_watch.runner.batch.base_verdict.check_repo", side_effect=_fake_status
-    ), patch("base_branch_watch.runner.batch.pr_status.check_pr", side_effect=pr_side_effect):
+    with (
+        patch("base_branch_watch.runner.batch.base_verdict.check_repo", side_effect=_fake_status),
+        patch("base_branch_watch.runner.batch.pr_status.check_pr", side_effect=pr_side_effect),
+    ):
         results, pr_statuses = batch.check_all(repos)
 
     by_path = {r.repo_path: r for r in results}
@@ -156,9 +158,12 @@ def test_check_all_isolates_git_exception_without_affecting_pr_status():
             raise RuntimeError("git exploded")
         return _fake_status(repo)
 
-    with patch(
-        "base_branch_watch.runner.batch.base_verdict.check_repo", side_effect=git_side_effect
-    ), patch("base_branch_watch.runner.batch.pr_status.check_pr", side_effect=_fake_pr_status):
+    with (
+        patch(
+            "base_branch_watch.runner.batch.base_verdict.check_repo", side_effect=git_side_effect
+        ),
+        patch("base_branch_watch.runner.batch.pr_status.check_pr", side_effect=_fake_pr_status),
+    ):
         results, pr_statuses = batch.check_all(repos)
 
     by_path = {r.repo_path: r for r in results}
@@ -192,9 +197,10 @@ def test_check_all_pr_repo_paths_gate_limits_check_pr_to_eligible_repo_only():
         calls.append(repo_path)
         return _fake_pr_status(repo_path)
 
-    with patch(
-        "base_branch_watch.runner.batch.base_verdict.check_repo", side_effect=_fake_status
-    ), patch("base_branch_watch.runner.batch.pr_status.check_pr", side_effect=pr_side_effect):
+    with (
+        patch("base_branch_watch.runner.batch.base_verdict.check_repo", side_effect=_fake_status),
+        patch("base_branch_watch.runner.batch.pr_status.check_pr", side_effect=pr_side_effect),
+    ):
         results, pr_statuses = batch.check_all(repos, pr_repo_paths={"/tmp/eligible"})
 
     assert calls == ["/tmp/eligible"]
@@ -208,11 +214,12 @@ def test_check_all_pr_repo_paths_none_default_checks_every_repo():
         RepoConfig(repo_path="/tmp/r1", base_branches=["main"]),
         RepoConfig(repo_path="/tmp/r2", base_branches=["main"]),
     ]
-    with patch(
-        "base_branch_watch.runner.batch.base_verdict.check_repo", side_effect=_fake_status
-    ), patch(
-        "base_branch_watch.runner.batch.pr_status.check_pr", side_effect=_fake_pr_status
-    ) as mock_pr:
+    with (
+        patch("base_branch_watch.runner.batch.base_verdict.check_repo", side_effect=_fake_status),
+        patch(
+            "base_branch_watch.runner.batch.pr_status.check_pr", side_effect=_fake_pr_status
+        ) as mock_pr,
+    ):
         results, pr_statuses = batch.check_all(repos)
 
     assert mock_pr.call_count == 2

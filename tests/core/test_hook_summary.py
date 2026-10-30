@@ -50,9 +50,7 @@ def test_build_summary_flags_overlapping_commits():
     overlapping = _commit("1111111", "touches shared.txt", changed_paths={"shared.txt"})
     clean = _commit("2222222", "touches other.txt", changed_paths={"other.txt"})
 
-    lines = build_summary(
-        [("origin/main", [overlapping, clean])], overlap_paths={"shared.txt"}
-    )
+    lines = build_summary([("origin/main", [overlapping, clean])], overlap_paths={"shared.txt"})
 
     overlap_line = next(line for line in lines if "1111111" in line)
     clean_line = next(line for line in lines if "2222222" in line)
