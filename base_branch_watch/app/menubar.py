@@ -18,7 +18,8 @@ import time
 import rumps
 from AppKit import NSAlert, NSApplication, NSOpenPanel, NSWindowCollectionBehaviorCanJoinAllSpaces
 
-from base_branch_watch.app import menu_builder
+from base_branch_watch.app import menu_builder, panel_model
+from base_branch_watch.app.panel_host import PanelHost
 from base_branch_watch.core import (
     config,
     git_ops,
@@ -32,7 +33,9 @@ from base_branch_watch.core import (
 from base_branch_watch.core.models import (
     BranchStatus,
     MenuItemSpec,
+    PrStatus,
     RepoStatus,
+    StaleBranch,
     StatusKind,
 )
 from base_branch_watch.notify.base import Notifier
@@ -90,12 +93,20 @@ class BaseBranchWatchApp(rumps.App):
         self._last_update_checked_at = float("-inf")
         self._update_info: self_update.UpdateInfo | None = None
         self._update_item: rumps.MenuItem | None = None
+        # Dashboard popover: fed by the last poll cycle, installed once the status
+        # item exists (rumps creates it inside run(), after __init__).
+        self._pr_statuses: dict[str, PrStatus] = {}
+        self._stale_statuses: dict[str, list[StaleBranch]] = {}
+        self._last_checked_at: float | None = None
+        self._panel_host: PanelHost | None = None
+        self._panel_install_timer = rumps.Timer(self._install_panel, 0.5)
 
         self._build_menu_shell()
         self._backfill_hooks()
 
         self.timer = rumps.Timer(self.check_all, self.cfg.poll_interval_seconds)
         self.timer.start()
+        self._panel_install_timer.start()
         self.check_all(None)
 
     # -- menu construction -------------------------------------------------
@@ -740,6 +751,54 @@ class BaseBranchWatchApp(rumps.App):
             self._state = next_state
             state.save_state(self._state)
 
+    def _install_panel(self, _sender) -> None:
+        """One-shot: take over left click on the status item once it exists.
+
+        A failure leaves the plain menu in place - the dashboard is an upgrade,
+        never a requirement.
+        """
+        self._panel_install_timer.stop()
+        try:
+            self._panel_host = PanelHost(
+                self._nsapp.nsstatusitem,
+                get_model=lambda: panel_model.build_panel(
+                    list(self.statuses.values()), self._pr_statuses, self._stale_statuses
+                ),
+                get_seconds_since_check=lambda: (
+                    None
+                    if self._last_checked_at is None
+                    else time.monotonic() - self._last_checked_at
+                ),
+                on_repo_click=lambda repo_path: self._repo_click_handler(repo_path)(None),
+                on_stale_click=self._show_stale_branches,
+                on_refresh=lambda: self.check_all(None),
+                on_add_repo=lambda: self._add_repo(None),
+            )
+            self._panel_host.install()
+        except Exception as exc:  # noqa: BLE001 - dashboard is optional, keep the menu
+            self._panel_host = None
+            log.append(f"[FAIL] dashboard panel install raised: {exc!r}")
+
+    def _refresh_panel(self) -> None:
+        """Re-render an open popover; its failure must not read as a poll-cycle failure."""
+        if self._panel_host is None:
+            return
+        try:
+            self._panel_host.refresh()
+        except Exception as exc:  # noqa: BLE001 - a UI rebuild bug must not abort the cycle
+            log.append(f"[FAIL] dashboard panel refresh raised: {exc!r}")
+
+    def _show_stale_branches(self, repo_path: str) -> None:
+        """The panel's Stale tile click: the repo's stale branches, one per line."""
+        status = self.statuses.get(repo_path)
+        name = status.name if status is not None else os.path.basename(repo_path.rstrip("/"))
+        spec = menu_builder.stale_row(self._stale_statuses.get(repo_path, []), name)
+        self._activate()
+        if spec is None:
+            self._show_alert(title=name, message="No stale branches.")
+            return
+        self._show_alert(title=name, message="\n".join(c.title for c in spec.children))
+
     def check_all(self, _sender) -> None:
         if self._checking:
             return
@@ -753,6 +812,9 @@ class BaseBranchWatchApp(rumps.App):
             for line in result.log_lines:
                 log.append(line)
             self.statuses = {status.repo_path: status for status in result.statuses}
+            self._pr_statuses = result.pr_statuses
+            self._stale_statuses = result.stale_statuses
+            self._last_checked_at = time.monotonic()
 
             if result.digest_statuses:
                 self._notifier.send_digest(result.digest_statuses)
@@ -777,6 +839,7 @@ class BaseBranchWatchApp(rumps.App):
                 else:
                     self._render_stale_row(status.repo_path, stale_spec)
             self._maybe_check_for_update()
+            self._refresh_panel()
         except Exception as exc:  # noqa: BLE001 - top-level poll-cycle guard, see CR-04
             # Never let a single bad cycle kill the whole polling loop (the
             # "never raises" convention core/git_ops.py established). Log

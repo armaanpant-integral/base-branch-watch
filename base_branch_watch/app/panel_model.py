@@ -1,0 +1,225 @@
+"""Pure statuses -> dashboard panel view-model. No UI-toolkit imports.
+
+One RepoTile per watched repo, sorted attention-first, plus the counts the
+panel header and tabs show. PR and stale state are informational: they shape a
+tile's pill and detail text but never its git-status severity.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from enum import Enum
+
+from base_branch_watch.app import menu_builder
+from base_branch_watch.core.models import (
+    PrStatus,
+    PrStatusKind,
+    RepoStatus,
+    Severity,
+    StaleBranch,
+    StaleKind,
+    StatusKind,
+)
+
+# Shorter than the menu's wording so the label fits beside the branch name.
+_STALE_LABELS = {
+    StaleKind.GONE_MERGED: "deleted on remote, merged",
+    StaleKind.GONE_UNMERGED: "deleted on remote, NOT merged",
+    StaleKind.MERGED: "merged, still on remote",
+}
+
+
+class PillTone(Enum):
+    OK = "ok"
+    ATTENTION = "attention"
+    NEUTRAL = "neutral"
+
+
+@dataclass(frozen=True)
+class RepoTile:
+    repo_path: str
+    name: str
+    base: str
+    behind: int
+    unpushed: int
+    severity: Severity
+    pill: str
+    pill_tone: PillTone
+    detail: str
+
+
+@dataclass(frozen=True)
+class PrRow:
+    repo_path: str
+    repo_name: str
+    number: int | None
+    branch: str
+    pill: str
+    pill_tone: PillTone
+    review: str
+    """Short review state ("approved", ...); empty unless the PR is open."""
+    is_open: bool
+
+
+@dataclass(frozen=True)
+class StaleRow:
+    name: str
+    label: str
+    needs_review: bool
+    """True when the branch holds commits the base lacks: look before deleting."""
+
+
+@dataclass(frozen=True)
+class StaleGroup:
+    repo_path: str
+    repo_name: str
+    branches: tuple[StaleRow, ...]
+
+
+@dataclass(frozen=True)
+class PanelModel:
+    tiles: tuple[RepoTile, ...]
+    prs: tuple[PrRow, ...]
+    stale_groups: tuple[StaleGroup, ...]
+
+    @property
+    def attention_count(self) -> int:
+        return sum(1 for tile in self.tiles if tile.severity > Severity.OK)
+
+    @property
+    def clear_count(self) -> int:
+        return len(self.tiles) - self.attention_count
+
+    @property
+    def open_pr_count(self) -> int:
+        return sum(1 for row in self.prs if row.is_open)
+
+    @property
+    def stale_total(self) -> int:
+        return sum(len(group.branches) for group in self.stale_groups)
+
+
+def _git_pill(status: RepoStatus) -> tuple[str, PillTone] | None:
+    """The pill for a git-level problem, or None when git state is fine."""
+    kind = status.worst_kind
+    if kind == StatusKind.CHECK_FAILED:
+        return "Check failed", PillTone.ATTENTION
+    if kind == StatusKind.CONFLICT_RISK:
+        branch = status.worst_branch_status
+        count = len(branch.conflict_paths) if branch is not None else 0
+        return f"Conflict · {count} file{'' if count == 1 else 's'}", PillTone.ATTENTION
+    if kind == StatusKind.DIVERGED:
+        return "Diverged", PillTone.ATTENTION
+    if kind in (StatusKind.BEHIND, StatusKind.BEHIND_AND_UNPUSHED):
+        return "Behind base", PillTone.ATTENTION
+    if kind == StatusKind.UNPUSHED:
+        return "Unpushed", PillTone.ATTENTION
+    if kind == StatusKind.NOT_CHECKED:
+        return "Checking…", PillTone.NEUTRAL
+    return None
+
+
+def _pr_pill(pr_status: PrStatus | None) -> tuple[str, PillTone]:
+    if pr_status is None or pr_status.kind == PrStatusKind.NO_PR:
+        return "No open PR", PillTone.NEUTRAL
+    if pr_status.kind == PrStatusKind.OPEN:
+        glyph, headline = menu_builder.pr_headline(pr_status)
+        if glyph == menu_builder.PR_READY_GLYPH:
+            return "PR ready", PillTone.OK
+        return headline, PillTone.ATTENTION
+    if pr_status.kind == PrStatusKind.MERGED:
+        return "PR merged", PillTone.NEUTRAL
+    if pr_status.kind == PrStatusKind.CLOSED:
+        return "PR closed", PillTone.NEUTRAL
+    return "PR status unavailable", PillTone.NEUTRAL
+
+
+def _detail(pr_status: PrStatus | None, stale_count: int) -> str:
+    if pr_status is not None and pr_status.number is not None:
+        return f"PR #{pr_status.number}"
+    if stale_count > 0:
+        return f"{stale_count} stale"
+    return ""
+
+
+def _tile(status: RepoStatus, pr_status: PrStatus | None, stale: list[StaleBranch]) -> RepoTile:
+    git_pill = _git_pill(status)
+    pill, tone = git_pill if git_pill is not None else _pr_pill(pr_status)
+    branch = status.worst_branch_status
+    return RepoTile(
+        repo_path=status.repo_path,
+        name=status.name,
+        base=branch.base if branch is not None else "",
+        behind=max((bs.behind for bs in status.branch_statuses), default=0),
+        unpushed=status.unpushed,
+        severity=status.severity,
+        pill=pill,
+        pill_tone=tone,
+        detail=_detail(pr_status, len(stale)),
+    )
+
+
+def _pr_row(status: RepoStatus, pr_status: PrStatus) -> PrRow:
+    pill, tone = _pr_pill(pr_status)
+    is_open = pr_status.kind == PrStatusKind.OPEN
+    return PrRow(
+        repo_path=status.repo_path,
+        repo_name=status.name,
+        number=pr_status.number,
+        branch=status.current_branch or "",
+        pill=pill,
+        pill_tone=tone,
+        review=menu_builder.pr_review_text(pr_status) if is_open else "",
+        is_open=is_open,
+    )
+
+
+def _pr_rows(statuses: list[RepoStatus], pr_statuses: dict[str, PrStatus]) -> list[PrRow]:
+    rows = [
+        _pr_row(status, pr_statuses[status.repo_path])
+        for status in statuses
+        if status.repo_path in pr_statuses
+        and pr_statuses[status.repo_path].kind != PrStatusKind.NO_PR
+    ]
+    rows.sort(key=lambda row: (row.pill_tone != PillTone.ATTENTION, row.repo_name))
+    return rows
+
+
+def _stale_groups(
+    statuses: list[RepoStatus], stale_statuses: dict[str, list[StaleBranch]]
+) -> list[StaleGroup]:
+    groups = [
+        StaleGroup(
+            repo_path=status.repo_path,
+            repo_name=status.name,
+            branches=tuple(
+                StaleRow(
+                    name=branch.name,
+                    label=_STALE_LABELS[branch.kind],
+                    needs_review=branch.kind == StaleKind.GONE_UNMERGED,
+                )
+                for branch in stale_statuses[status.repo_path]
+            ),
+        )
+        for status in statuses
+        if stale_statuses.get(status.repo_path)
+    ]
+    groups.sort(key=lambda group: (-len(group.branches), group.repo_name))
+    return groups
+
+
+def build_panel(
+    statuses: list[RepoStatus],
+    pr_statuses: dict[str, PrStatus],
+    stale_statuses: dict[str, list[StaleBranch]],
+) -> PanelModel:
+    tiles = [
+        _tile(status, pr_statuses.get(status.repo_path), stale_statuses.get(status.repo_path, []))
+        for status in statuses
+    ]
+    tiles.sort(key=lambda tile: (-tile.severity, tile.name))
+    return PanelModel(
+        tiles=tuple(tiles),
+        prs=tuple(_pr_rows(statuses, pr_statuses)),
+        stale_groups=tuple(_stale_groups(statuses, stale_statuses)),
+    )

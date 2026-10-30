@@ -210,6 +210,39 @@ def _mergeable_segment(status: PrStatus) -> tuple[str, str, str]:
     return "⏳", "mergeability unknown", "unknown — GitHub still computing"
 
 
+PR_READY_GLYPH = "✅"
+_PR_GLYPH_RANK = {"❌": 3, "⚠️": 2, "⏳": 1}
+
+
+def _headline_of(segments: list[tuple[str, str]]) -> tuple[str, str]:
+    """The worst segment as (glyph, text), or (PR_READY_GLYPH, "ready") when none is
+    failing, warning or pending. Ties go to the earliest segment."""
+    worst_glyph, worst_text = max(segments, key=lambda seg: _PR_GLYPH_RANK.get(seg[0], 0))
+    if worst_glyph not in _PR_GLYPH_RANK:
+        return PR_READY_GLYPH, "ready"
+    return worst_glyph, worst_text
+
+
+def pr_headline(pr_status: PrStatus) -> tuple[str, str]:
+    """Collapse an OPEN PR's Checks/Review/Mergeable segments into one (glyph, text).
+
+    The worst segment wins (❌ over ⚠️ over ⏳); ties go to the earliest segment. When nothing
+    is failing or pending the PR is "ready". Full detail stays in the submenu children.
+    """
+    return _headline_of(
+        [
+            _checks_segment(pr_status)[:2],
+            _review_segment(pr_status)[:2],
+            _mergeable_segment(pr_status)[:2],
+        ]
+    )
+
+
+def pr_review_text(pr_status: PrStatus) -> str:
+    """The short review state of an OPEN PR ("approved", "review pending", ...)."""
+    return _review_segment(pr_status)[1]
+
+
 def _pr_row(pr_status: PrStatus, repo_name: str) -> MenuItemSpec:
     """D-05/D-06/D-07/D-02/D-09/D-10/D-03 — the second, independent
     PR-status row per repo.
@@ -224,11 +257,8 @@ def _pr_row(pr_status: PrStatus, repo_name: str) -> MenuItemSpec:
         checks_glyph, checks_text, checks_child = _checks_segment(pr_status)
         review_glyph, review_text, review_child = _review_segment(pr_status)
         mergeable_glyph, mergeable_text, mergeable_child = _mergeable_segment(pr_status)
-        title = (
-            f"🔀 {repo_name}: PR #{pr_status.number} — "
-            f"{checks_glyph} {checks_text} · {review_glyph} {review_text} · "
-            f"{mergeable_glyph} {mergeable_text}"
-        )
+        headline_glyph, headline = pr_headline(pr_status)
+        title = f"{headline_glyph} {repo_name}: PR #{pr_status.number} · {headline}"
         children = [
             MenuItemSpec(title=f"{checks_glyph} Checks: {checks_child}", callback_key=None),
             MenuItemSpec(title=f"{review_glyph} Review: {review_child}", callback_key=None),
@@ -256,7 +286,7 @@ def _pr_row(pr_status: PrStatus, repo_name: str) -> MenuItemSpec:
 
     if pr_status.kind == PrStatusKind.CLOSED:
         return MenuItemSpec(
-            title=f"⚫ {repo_name}: PR #{pr_status.number} closed (not merged)",
+            title=f"⚪ {repo_name}: PR #{pr_status.number} closed (not merged)",
             callback_key=None,
         )
 
