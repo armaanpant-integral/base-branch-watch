@@ -30,6 +30,7 @@ class PanelHost:
         get_model: Callable[[], PanelModel],
         get_seconds_since_check: Callable[[], float | None],
         on_repo_click: Callable[[str], None],
+        on_stale_click: Callable[[str], None],
         on_refresh: Callable[[], None],
         on_add_repo: Callable[[], None],
     ) -> None:
@@ -40,6 +41,7 @@ class PanelHost:
         self._get_seconds_since_check = get_seconds_since_check
         self._panel = DashboardPanel(
             on_repo_click=lambda path: self._close_then(on_repo_click, path),
+            on_stale_click=lambda path: self._close_then(on_stale_click, path),
             on_refresh=on_refresh,
             on_add_repo=lambda: self._close_then(on_add_repo),
         )

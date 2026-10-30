@@ -52,9 +52,8 @@ MAX_CONTENT_HEIGHT = 470
 CONTENT_WIDTH = PANEL_WIDTH - 2 * PADDING
 TILE_WIDTH = (CONTENT_WIDTH - GAP) // 2
 TILE_WIDTH_PAD = 14
-PR_ROW_HEIGHT = 76
-STALE_HEADER_HEIGHT = 40
-STALE_ROW_HEIGHT = 28
+STALE_TILE_HEIGHT = 150
+STALE_PREVIEW_ROWS = 3
 TAB_TITLES = ("Repos", "PRs", "Stale")
 
 _NS_BOX_CUSTOM = 4
@@ -62,7 +61,8 @@ _NS_NO_BORDER = 0
 _NS_LINE_BORDER = 1
 _NS_NO_TITLE = 0
 _NS_TRUNCATE_TAIL = 4
-_NS_ALIGN_RIGHT = 1
+_NS_ALIGN_CENTER = 1
+_NS_ALIGN_RIGHT = 2
 _NS_MIN_Y_EDGE = 1
 _NS_POPOVER_TRANSIENT = 1
 _FONT_SEMIBOLD = 0.3
@@ -226,52 +226,67 @@ def _clickable(parent, tag, target, width, height):
     _place(click, parent, 0, 0, width, height)
 
 
-def _pr_card(row: PrRow, tag: int, target) -> NSView:
-    card = _card(CONTENT_WIDTH, PR_ROW_HEIGHT)
+def _tone_dot(tone: PillTone) -> NSView:
+    colors = {
+        PillTone.OK: NSColor.systemGreenColor(),
+        PillTone.ATTENTION: NSColor.systemOrangeColor(),
+        PillTone.NEUTRAL: NSColor.tertiaryLabelColor(),
+    }
+    return _box(colors[tone], 5)
+
+
+def _pr_tile(row: PrRow, tag: int, target) -> NSView:
+    """Same shape as a repo tile: dot, name, branch, one detail row, one pill."""
+    alert = row.pill_tone == PillTone.ATTENTION
+    card = _card(TILE_WIDTH, TILE_HEIGHT, alert)
     pad = TILE_WIDTH_PAD
-    number = f"PR #{row.number}" if row.number is not None else ""
-    _place(_label(row.repo_name, 16, _FONT_SEMIBOLD), card, pad, 12, CONTENT_WIDTH - 130, 21)
-    right = _label(number, 13, color=NSColor.secondaryLabelColor(), align=_NS_ALIGN_RIGHT)
-    _place(right, card, CONTENT_WIDTH - pad - 100, 14, 100, 18)
-    pill_w = _pill(card, row.pill, row.pill_tone, pad, 42, CONTENT_WIDTH - 2 * pad)
-    if row.detail:
-        detail = _label(row.detail, 12.5, color=NSColor.secondaryLabelColor())
-        x = pad + pill_w + 10
-        _place(detail, card, x, 44, CONTENT_WIDTH - x - pad, 17)
-    _clickable(card, tag, target, CONTENT_WIDTH, PR_ROW_HEIGHT)
+    text_x = pad + 18
+    inner_w = TILE_WIDTH - text_x - pad
+    _place(_tone_dot(row.pill_tone), card, pad, 19, 10, 10)
+    _place(_label(row.repo_name, 16, _FONT_SEMIBOLD), card, text_x, 14, inner_w, 21)
+    branch = _label(row.branch or " ", 12.5, color=NSColor.secondaryLabelColor(), mono=True)
+    _place(branch, card, text_x, 38, inner_w, 17)
+
+    number = f"PR #{row.number}" if row.number is not None else " "
+    _place(_label(number, 14, _FONT_SEMIBOLD), card, pad, 64, 90, 18)
+    review = _label(row.review, 13, color=NSColor.secondaryLabelColor(), align=_NS_ALIGN_RIGHT)
+    _place(review, card, 100, 64, TILE_WIDTH - 100 - pad, 18)
+    _pill(card, row.pill, row.pill_tone, pad, 88, TILE_WIDTH - 2 * pad)
+    _clickable(card, tag, target, TILE_WIDTH, TILE_HEIGHT)
     return card
 
 
-def _stale_card(group: StaleGroup) -> NSView:
-    height = STALE_HEADER_HEIGHT + len(group.branches) * STALE_ROW_HEIGHT + 10
-    card = _card(CONTENT_WIDTH, height)
+def _stale_tile(group: StaleGroup, tag: int, target) -> NSView:
+    """Same shape as a repo tile, taller to preview the first few branch names."""
+    needs_review = any(branch.needs_review for branch in group.branches)
+    card = _card(TILE_WIDTH, STALE_TILE_HEIGHT, needs_review)
     pad = TILE_WIDTH_PAD
-    _place(_label(group.repo_name, 16, _FONT_SEMIBOLD), card, pad, 12, CONTENT_WIDTH - 140, 21)
+    text_x = pad + 18
+    inner_w = TILE_WIDTH - text_x - pad
+    tone = PillTone.ATTENTION if needs_review else PillTone.NEUTRAL
+    _place(_tone_dot(tone), card, pad, 19, 10, 10)
+    _place(_label(group.repo_name, 16, _FONT_SEMIBOLD), card, text_x, 14, inner_w, 21)
     count = len(group.branches)
-    total = _label(
-        f"{count} branch{'' if count == 1 else 'es'}",
-        13,
-        color=NSColor.secondaryLabelColor(),
-        align=_NS_ALIGN_RIGHT,
-    )
-    _place(total, card, CONTENT_WIDTH - pad - 110, 14, 110, 18)
-    name_w = int(CONTENT_WIDTH * 0.42)
-    for index, branch in enumerate(group.branches):
-        y = STALE_HEADER_HEIGHT + index * STALE_ROW_HEIGHT
-        name = _label(branch.name, 12.5, color=NSColor.labelColor(), mono=True)
-        _place(name, card, pad, y, name_w, 17)
-        color = (
-            NSColor.systemOrangeColor() if branch.needs_review else NSColor.secondaryLabelColor()
-        )
-        label = _label(branch.label, 12.5, color=color, align=_NS_ALIGN_RIGHT)
-        x = pad + name_w + 8
-        _place(label, card, x, y, CONTENT_WIDTH - x - pad, 17)
+    summary = f"{count} stale branch{'' if count == 1 else 'es'}"
+    _place(_label(summary, 13, color=NSColor.secondaryLabelColor()), card, text_x, 38, inner_w, 18)
+
+    # Branches that need a look (remote gone, not merged) sort first.
+    ordered = sorted(group.branches, key=lambda branch: not branch.needs_review)
+    for index, branch in enumerate(ordered[:STALE_PREVIEW_ROWS]):
+        color = NSColor.systemOrangeColor() if branch.needs_review else NSColor.labelColor()
+        name = _label(branch.name, 12.5, color=color, mono=True)
+        _place(name, card, pad, 66 + index * 20, TILE_WIDTH - 2 * pad, 17)
+    hidden = count - STALE_PREVIEW_ROWS
+    if hidden > 0:
+        more = _label(f"+{hidden} more", 12.5, color=NSColor.secondaryLabelColor())
+        _place(more, card, pad, 66 + STALE_PREVIEW_ROWS * 20, TILE_WIDTH - 2 * pad, 17)
+    _clickable(card, tag, target, TILE_WIDTH, STALE_TILE_HEIGHT)
     return card
 
 
 def _empty_state(text: str) -> NSView:
     view = _FlippedView.alloc().initWithFrame_(NSMakeRect(0, 0, CONTENT_WIDTH, 120))
-    label = _label(text, 14, color=NSColor.secondaryLabelColor(), align=2)
+    label = _label(text, 14, color=NSColor.secondaryLabelColor(), align=_NS_ALIGN_CENTER)
     _place(label, view, 0, 48, CONTENT_WIDTH, 20)
     return view
 
@@ -289,10 +304,12 @@ class DashboardPanel:
     def __init__(
         self,
         on_repo_click: Callable[[str], None],
+        on_stale_click: Callable[[str], None],
         on_refresh: Callable[[], None],
         on_add_repo: Callable[[], None],
     ) -> None:
         self._on_repo_click = on_repo_click
+        self._on_stale_click = on_stale_click
         self._on_refresh = on_refresh
         self._on_add_repo = on_add_repo
         self._callbacks: list[Callable] = []
@@ -366,30 +383,35 @@ class DashboardPanel:
             _place(_tile_view(tile, tag, self._target), grid, x, y, TILE_WIDTH, TILE_HEIGHT)
         return grid, height
 
+    def _build_tile_grid(self, views: list[NSView], tile_height: int) -> tuple[NSView, int]:
+        rows = math.ceil(len(views) / 2)
+        height = rows * tile_height + (rows - 1) * GAP
+        grid = _FlippedView.alloc().initWithFrame_(NSMakeRect(0, 0, CONTENT_WIDTH, height))
+        for index, view in enumerate(views):
+            x = (index % 2) * (TILE_WIDTH + GAP)
+            y = (index // 2) * (tile_height + GAP)
+            _place(view, grid, x, y, TILE_WIDTH, tile_height)
+        return grid, height
+
     def _build_prs(self, model: PanelModel) -> tuple[NSView, int]:
         if not model.prs:
             return _empty_state("No pull requests on watched branches"), 120
-        height = len(model.prs) * PR_ROW_HEIGHT + (len(model.prs) - 1) * GAP
-        column = _FlippedView.alloc().initWithFrame_(NSMakeRect(0, 0, CONTENT_WIDTH, height))
-        for index, row in enumerate(model.prs):
+        views = []
+        for row in model.prs:
             repo_path = row.repo_path
             tag = self._register(lambda _s, path=repo_path: self._on_repo_click(path))
-            y = index * (PR_ROW_HEIGHT + GAP)
-            _place(_pr_card(row, tag, self._target), column, 0, y, CONTENT_WIDTH, PR_ROW_HEIGHT)
-        return column, height
+            views.append(_pr_tile(row, tag, self._target))
+        return self._build_tile_grid(views, TILE_HEIGHT)
 
     def _build_stale(self, model: PanelModel) -> tuple[NSView, int]:
         if not model.stale_groups:
             return _empty_state("No stale branches"), 120
-        cards = [_stale_card(group) for group in model.stale_groups]
-        height = sum(card.frame().size.height for card in cards) + (len(cards) - 1) * GAP
-        column = _FlippedView.alloc().initWithFrame_(NSMakeRect(0, 0, CONTENT_WIDTH, height))
-        y = 0.0
-        for card in cards:
-            card_height = card.frame().size.height
-            _place(card, column, 0, y, CONTENT_WIDTH, card_height)
-            y += card_height + GAP
-        return column, int(height)
+        views = []
+        for group in model.stale_groups:
+            repo_path = group.repo_path
+            tag = self._register(lambda _s, path=repo_path: self._on_stale_click(path))
+            views.append(_stale_tile(group, tag, self._target))
+        return self._build_tile_grid(views, STALE_TILE_HEIGHT)
 
     def _build_header(self, root, model: PanelModel) -> None:
         title = f"{model.attention_count} need attention" if model.attention_count else "All clear"

@@ -53,10 +53,11 @@ class PrRow:
     repo_path: str
     repo_name: str
     number: int | None
+    branch: str
     pill: str
     pill_tone: PillTone
-    detail: str
-    """Checks / review / mergeable summary; empty unless the PR is open."""
+    review: str
+    """Short review state ("approved", ...); empty unless the PR is open."""
 
 
 @dataclass(frozen=True)
@@ -69,6 +70,7 @@ class StaleRow:
 
 @dataclass(frozen=True)
 class StaleGroup:
+    repo_path: str
     repo_name: str
     branches: list[StaleRow]
 
@@ -151,9 +153,10 @@ def _pr_row(status: RepoStatus, pr_status: PrStatus) -> PrRow:
         repo_path=status.repo_path,
         repo_name=status.name,
         number=pr_status.number,
+        branch=status.current_branch or "",
         pill=pill,
         pill_tone=tone,
-        detail=menu_builder.pr_detail(pr_status) if is_open else "",
+        review=menu_builder.pr_review_text(pr_status) if is_open else "",
     )
 
 
@@ -173,6 +176,7 @@ def _stale_groups(
 ) -> list[StaleGroup]:
     groups = [
         StaleGroup(
+            repo_path=status.repo_path,
             repo_name=status.name,
             branches=[
                 StaleRow(

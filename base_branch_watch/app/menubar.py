@@ -770,6 +770,7 @@ class BaseBranchWatchApp(rumps.App):
                     else time.monotonic() - self._last_checked_at
                 ),
                 on_repo_click=lambda repo_path: self._repo_click_handler(repo_path)(None),
+                on_stale_click=self._show_stale_branches,
                 on_refresh=lambda: self.check_all(None),
                 on_add_repo=lambda: self._add_repo(None),
             )
@@ -777,6 +778,17 @@ class BaseBranchWatchApp(rumps.App):
         except Exception as exc:  # noqa: BLE001 - dashboard is optional, keep the menu
             self._panel_host = None
             log.append(f"[FAIL] dashboard panel install raised: {exc!r}")
+
+    def _show_stale_branches(self, repo_path: str) -> None:
+        """The panel's Stale tile click: the repo's stale branches, one per line."""
+        status = self.statuses.get(repo_path)
+        name = status.name if status is not None else os.path.basename(repo_path.rstrip("/"))
+        spec = menu_builder.stale_row(self._stale_statuses.get(repo_path, []), name)
+        self._activate()
+        if spec is None:
+            self._show_alert(title=name, message="No stale branches.")
+            return
+        self._show_alert(title=spec.title, message="\n".join(c.title for c in spec.children))
 
     def check_all(self, _sender) -> None:
         if self._checking:

@@ -72,8 +72,8 @@ Full setup details, macOS Full Disk Access / notification-permission gotchas, un
 **Dashboard panel:** a header ("2 need attention", "4 clear · checked 2m ago") over three tabs. Long lists scroll. Footer buttons: **Refresh** and **Add repo**.
 
 - **Repos** - a grid of one tile per watched repo, repos that need attention first. Click a tile for the same detail the menu row gives.
-- **PRs** - one card per repo whose current branch has a PR: PR number, a status pill (`PR ready`, the worst failing or pending check, `PR merged`, `PR closed`) and, for an open PR, a checks · review · mergeable summary. Click a card for that repo's detail.
-- **Stale** - local branches you can likely delete, grouped by repo, biggest group first. Each branch says whether the remote branch is gone and whether it was merged. `deleted on remote, NOT merged` is shown in orange: a squash merge or lost work, so look first.
+- **PRs** - the same tile grid, one tile per repo whose current branch has a PR: PR number, review state (`approved`, `review pending`, ...) and a status pill (`PR ready`, the worst failing or pending check, `PR merged`, `PR closed`). Click a tile for that repo's detail.
+- **Stale** - the same tile grid, one tile per repo that has stale local branches, biggest first. Each tile shows the branch count and the first few branch names, with branches that need a look first and in orange (`deleted on remote, NOT merged`: a squash merge or lost work). Click a tile for the full list with each branch's reason.
 
 Each repo tile shows:
 

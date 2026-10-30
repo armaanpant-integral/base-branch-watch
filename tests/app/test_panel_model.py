@@ -243,9 +243,10 @@ def test_prs_lists_only_repos_with_a_pr_attention_first_then_name():
         "2 failing (0/2)",
         PillTone.ATTENTION,
     )
-    assert failing.detail == "2 failing (0/2) · approved · mergeable"
+    assert failing.review == "approved"
+    assert failing.branch == "main"
     assert (ready.pill, ready.pill_tone) == ("PR ready", PillTone.OK)
-    assert (merged.pill, merged.detail) == ("PR merged", "")
+    assert (merged.pill, merged.review) == ("PR merged", "")
 
 
 def test_prs_empty_when_no_repo_has_a_pr():
@@ -269,6 +270,7 @@ def test_stale_groups_are_per_repo_largest_first_with_kind_labels():
     panel = build_panel([small, big, none], {}, stale)
 
     assert [g.repo_name for g in panel.stale_groups] == ["b-big", "a-small"]
+    assert panel.stale_groups[0].repo_path == big.repo_path
     first = panel.stale_groups[0]
     assert [b.name for b in first.branches] == ["old-1", "old-2"]
     assert first.branches[0].label == "deleted on remote, merged"
