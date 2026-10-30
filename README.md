@@ -80,9 +80,9 @@ Click the menu bar icon to see watched repos and their status.
 | ⚠️ conflict risk | Merging the base branch would conflict (or its incoming changes touch a file you have uncommitted edits to) - pulling *will* need manual conflict resolution |
 
 > **What counts as a conflict risk?** Committed work is judged by `git merge-tree`, the same dry run the pre-push gate uses, so the menu and the gate agree: two branches editing the same file in different places merge cleanly and do not flag. Uncommitted edits (staged, unstaged, untracked) cannot be merge-tested, so for those the rule is simpler: an incoming change to a file you have uncommitted edits to flags. If `git merge-tree` cannot run, it falls back to "incoming and local changes touch the same file". Everything is recomputed fresh from live git state on *every* poll cycle - nothing is cached or persisted between checks - so a warning can appear or disappear from one refresh to the next as the base branch moves or your branch catches up. That's expected behavior, not a bug.
-| 🔀 PR #N - ✅/❌/⏳ ... | Your current branch's open PR: checks · review · mergeable state (click to expand) |
+| ✅/⏳/❌ PR #N · ready / worst issue | Your current branch's open PR, headlined by its worst state (click to expand for checks, review, mergeable) |
 | ⚪ no open PR | Current branch has no PR yet |
-| ✅ PR #N merged / ⚫ closed | One-cycle confirmation that your PR landed (or was closed without merging) |
+| ✅ PR #N merged / ⚪ closed | One-cycle confirmation that your PR landed (or was closed without merging) |
 | ⚠️ PR status - ... | `gh` isn't installed / isn't logged in / is rate-limited - this never blocks the git-status row above it |
 | 🧹 N stale branches | Local branches you can likely delete (click to expand). Each is labelled: *remote deleted, merged* (safe), *remote deleted, NOT merged (check before deleting)* (a squash merge or lost work, so look first), or *merged, remote branch still exists*. Never lists the checked-out branch, a watched base branch, a branch with no upstream, or one tracking a remote other than `origin`. If `origin` can't be read that cycle the row simply disappears (the app log notes it) rather than guessing |
 

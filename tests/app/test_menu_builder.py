@@ -345,9 +345,7 @@ def test_pr_row_open_all_clear_locked_string():
 
     spec = menu_builder._pr_row(status, "base-branch-watch")
 
-    assert spec.title == (
-        "🔀 base-branch-watch: PR #42 — ✅ 3/3 checks · ✅ approved · ✅ mergeable"
-    )
+    assert spec.title == "✅ base-branch-watch: PR #42 · ready"
     assert spec.callback_key is None
     assert len(spec.children) == 3
 
@@ -397,9 +395,7 @@ def test_pr_row_open_failing_checks_locked_string():
 
     spec = menu_builder._pr_row(status, "base-branch-watch")
 
-    assert spec.title == (
-        "🔀 base-branch-watch: PR #7 — ❌ 3 failing (8/11) · ⏳ review pending · ❌ conflicts"
-    )
+    assert spec.title == "❌ base-branch-watch: PR #7 · 3 failing (8/11)"
     assert [c.title for c in spec.children] == [
         "❌ Checks: 3 failing (8/11)",
         "⏳ Review: pending",
@@ -418,7 +414,7 @@ def test_pr_row_open_no_checks_configured():
 
     spec = menu_builder._pr_row(status, "base-branch-watch")
 
-    assert "— no checks ·" in spec.title
+    assert spec.title == "✅ base-branch-watch: PR #42 · ready"
     assert spec.children[0].title == "— Checks: no checks configured"
 
 
@@ -436,7 +432,7 @@ def test_pr_row_open_checks_fetch_unavailable_is_distinct_from_no_checks():
 
     spec = menu_builder._pr_row(status, "base-branch-watch")
 
-    assert "checks unavailable" in spec.title
+    assert spec.title == "⚠️ base-branch-watch: PR #42 · checks unavailable"
     assert "no checks configured" not in spec.title
     assert spec.children[0].title == "⚠️ Checks: checks unavailable — fetch failed"
 
@@ -462,7 +458,7 @@ def test_pr_row_open_pending_checks():
 
     spec = menu_builder._pr_row(status, "base-branch-watch")
 
-    assert "⏳ 2 pending (1/3) ·" in spec.title
+    assert spec.title == "⏳ base-branch-watch: PR #42 · 2 pending (1/3)"
     assert spec.children[0].title == "⏳ Checks: 2 pending (1/3)"
 
 
@@ -471,7 +467,7 @@ def test_pr_row_open_null_review_decision_is_distinct_case():
 
     spec = menu_builder._pr_row(status, "base-branch-watch")
 
-    assert "— no review required ·" in spec.title
+    assert spec.title == "✅ base-branch-watch: PR #42 · ready"
     assert spec.children[1].title == "— Review: not required"
 
 
@@ -494,7 +490,10 @@ def test_pr_row_open_mergeable_state_table():
     for value, (glyph, text, child_text) in cases.items():
         status = _pr_status(kind=PrStatusKind.OPEN, merge_state_status=value, base_ref="main")
         spec = menu_builder._pr_row(status, "base-branch-watch")
-        assert f"{glyph} {text}" in spec.title, value
+        if glyph == "✅":
+            assert spec.title.endswith("· ready"), value
+        else:
+            assert spec.title.startswith(glyph) and spec.title.endswith(f"· {text}"), value
         assert spec.children[2].title == f"{glyph} Mergeable: {child_text}", value
 
 
@@ -590,6 +589,6 @@ def test_pr_row_closed_locked_string():
 
     spec = menu_builder._pr_row(status, "repo")
 
-    assert spec.title == "⚫ repo: PR #7 closed (not merged)"
+    assert spec.title == "⚪ repo: PR #7 closed (not merged)"
     assert spec.callback_key is None
     assert spec.children == []
