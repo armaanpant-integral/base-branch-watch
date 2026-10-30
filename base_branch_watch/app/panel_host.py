@@ -11,7 +11,6 @@ from collections.abc import Callable
 
 from AppKit import (
     NSApplication,
-    NSEvent,
     NSEventMaskLeftMouseUp,
     NSEventMaskRightMouseUp,
     NSEventModifierFlagControl,
@@ -21,6 +20,7 @@ from AppKit import (
 
 from base_branch_watch.app.panel_model import PanelModel
 from base_branch_watch.app.panel_view import ActionTarget, DashboardPanel
+from base_branch_watch.core import log
 
 
 class PanelHost:
@@ -63,20 +63,24 @@ class PanelHost:
         action(*args)
 
     def _on_status_click(self, _sender) -> None:
-        event = NSApplication.sharedApplication().currentEvent()
-        is_right = event.type() == NSEventTypeRightMouseUp
-        is_ctrl = bool(event.modifierFlags() & NSEventModifierFlagControl)
-        if is_right or is_ctrl:
-            self._pop_menu()
-            return
-        if not self._panel.is_shown:
-            self._panel.update(self._get_model(), self._get_seconds_since_check())
-        self._panel.show(self._button)
+        try:
+            event = NSApplication.sharedApplication().currentEvent()
+            # A synthesized click (accessibility) may carry no event: treat as left click.
+            is_right = event is not None and event.type() == NSEventTypeRightMouseUp
+            is_ctrl = event is not None and bool(event.modifierFlags() & NSEventModifierFlagControl)
+            if is_right or is_ctrl:
+                self._pop_menu()
+                return
+            if not self._panel.is_shown:
+                self._panel.update(self._get_model(), self._get_seconds_since_check())
+            self._panel.show(self._button)
+        except Exception as exc:  # noqa: BLE001 - never raise out of an AppKit action
+            log.append(f"[FAIL] dashboard panel click raised: {exc!r}")
 
     def _pop_menu(self) -> None:
         self._panel.close()
-        NSMenu.popUpContextMenu_withEvent_forView_(
-            self._menu,
-            NSApplication.sharedApplication().currentEvent() or NSEvent.new(),
-            self._button,
-        )
+        event = NSApplication.sharedApplication().currentEvent()
+        if event is None:
+            log.append("[FAIL] dashboard panel could not open menu: no current event")
+            return
+        NSMenu.popUpContextMenu_withEvent_forView_(self._menu, event, self._button)
