@@ -308,3 +308,61 @@ def test_assess_base_alone_never_writes_the_app_log(
     _assess(clone_path, default_branch_name, detailed=True)
 
     assert not log.log_path().exists()
+
+
+def _timed_out_warns() -> int:
+    return log.log_path().read_text().count("[WARN] merge-tree timed out")
+
+
+def test_timeout_warning_returns_after_a_fetch_failure_in_between(bbw_config_dir):
+    timed_out = base_verdict.BaseVerdict(
+        base="main", fetch_ok=True, merge_check=git_ops.TimedOut(7)
+    )
+    fetch_failed = base_verdict.BaseVerdict(base="main", fetch_ok=False, fetch_error="down")
+
+    for verdict in (timed_out, timed_out, fetch_failed, timed_out):
+        base_verdict._branch_status("/r", verdict)
+
+    assert _timed_out_warns() == 2
+
+
+def test_timeout_warning_returns_after_a_comparison_failure_in_between(bbw_config_dir):
+    timed_out = base_verdict.BaseVerdict(
+        base="main", fetch_ok=True, merge_check=git_ops.TimedOut(7)
+    )
+    comparison_failed = base_verdict.BaseVerdict(base="main", fetch_ok=True, comparison_ok=False)
+
+    for verdict in (timed_out, comparison_failed, timed_out):
+        base_verdict._branch_status("/r", verdict)
+
+    assert _timed_out_warns() == 2
+
+
+def test_timeout_warning_returns_after_an_undeterminable_with_empty_cause(bbw_config_dir):
+    timed_out = base_verdict.BaseVerdict(
+        base="main", fetch_ok=True, merge_check=git_ops.TimedOut(7)
+    )
+    unknown = base_verdict.BaseVerdict(
+        base="main", fetch_ok=True, merge_check=git_ops.Undeterminable()
+    )
+
+    for verdict in (timed_out, unknown, timed_out):
+        base_verdict._branch_status("/r", verdict)
+
+    assert _timed_out_warns() == 2
+
+
+def test_logged_merge_checks_are_pruned_for_repos_and_bases_no_longer_configured(
+    bbw_config_dir,
+):
+    timed_out = base_verdict.BaseVerdict(
+        base="main", fetch_ok=True, merge_check=git_ops.TimedOut(7)
+    )
+    for repo_path, base in (("/keep", "main"), ("/keep", "gone"), ("/removed", "main")):
+        base_verdict._branch_status(
+            repo_path, base_verdict.BaseVerdict(**{**timed_out.__dict__, "base": base})
+        )
+
+    base_verdict.prune_logged_merge_checks([RepoConfig(repo_path="/keep", base_branches=["main"])])
+
+    assert set(base_verdict._logged_merge_checks) == {("/keep", "main")}

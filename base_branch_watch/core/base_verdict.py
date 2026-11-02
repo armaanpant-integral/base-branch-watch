@@ -177,6 +177,20 @@ def _reset_logged_merge_checks() -> None:
         _logged_merge_checks.clear()
 
 
+def _forget_logged_merge_check(repo_path: str, base: str) -> None:
+    with _logged_merge_checks_lock:
+        _logged_merge_checks.pop((repo_path, base), None)
+
+
+def prune_logged_merge_checks(repos: list[RepoConfig]) -> None:
+    """Drop log-once memory for (repo, base) pairs no longer in the config, so a
+    removed repo or base does not leak an entry for the life of the app."""
+    live = {(repo.repo_path, base) for repo in repos for base in repo.base_branches}
+    with _logged_merge_checks_lock:
+        for key in [key for key in _logged_merge_checks if key not in live]:
+            del _logged_merge_checks[key]
+
+
 def _log_merge_check_once(repo_path: str, base: str, check: MergeCheck) -> None:
     """WARN when merge-tree timed out or failed, once per state change per
     (repo, base) rather than on every poll. A decisive answer resets the memory
@@ -192,8 +206,9 @@ def _log_merge_check_once(repo_path: str, base: str, check: MergeCheck) -> None:
         elif isinstance(check, Undeterminable) and check.cause:
             message = f"[WARN] merge-tree could not check {repo_path} (base {base}): {check.cause}"
         else:
-            if not isinstance(check, Undeterminable):  # Clean/Conflicted: decisive
-                _logged_merge_checks.pop(key, None)
+            # Clean/Conflicted are decisive; an Undeterminable with no cause carries
+            # nothing to log. Either way a later TimedOut is a recurrence: log it.
+            _logged_merge_checks.pop(key, None)
             return
         if _logged_merge_checks.get(key) == check:
             return
@@ -211,9 +226,11 @@ def _branch_status(repo_path: str, verdict: BaseVerdict) -> BranchStatus:
         )
 
     if not verdict.fetch_ok:
+        _forget_logged_merge_check(repo_path, base)
         git_ops.log_fetch_failure(repo_path, base, verdict.fetch_error)
         return failed(git_ops.fetch_failure_reason(verdict.fetch_error))
     if not verdict.comparison_ok:
+        _forget_logged_merge_check(repo_path, base)
         return failed(_REASON_STATUS_FAILED)
 
     _log_merge_check_once(repo_path, base, verdict.merge_check)
