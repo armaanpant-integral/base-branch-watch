@@ -476,3 +476,82 @@ def test_load_skips_entry_with_unhashable_repo_path_instead_of_quarantining(bbw_
     loaded = config.load_config()
 
     assert [r.repo_path for r in loaded.repos] == ["/tmp/ok"]
+
+
+def _saved_repos(bbw_config_dir):
+    return json.loads((bbw_config_dir / config.CONFIG_FILENAME).read_text())["repos"]
+
+
+@pytest.mark.parametrize(
+    "skipped",
+    ["not-a-dict", {"base_branches": ["main"]}, {"repo_path": 7}, {"repo_path": ["x"]}],
+)
+def test_skipped_entry_survives_add_remove_and_interval_saves(bbw_config_dir, skipped):
+    _write_raw(bbw_config_dir, [skipped, {"repo_path": "/tmp/ok", "base_branches": ["main"]}])
+
+    loaded = config.load_config()
+    assert loaded.skipped_entries == [skipped]
+    for edited in (
+        config.add_repo(loaded, "/tmp/b", ["main"]),
+        config.remove_repo(loaded, "/tmp/ok"),
+        config.set_poll_interval(loaded, 60),
+    ):
+        config.save_config(edited)
+        assert skipped in _saved_repos(bbw_config_dir)
+
+
+def test_skip_is_reported_with_the_existing_log_pattern(bbw_config_dir):
+    from base_branch_watch.core import log
+
+    _write_raw(bbw_config_dir, ["not-a-dict"])
+
+    config.load_config(quarantine=True)
+
+    assert "config: skipping non-object repo entry 'not-a-dict'" in log.log_path().read_text()
+
+
+def test_duplicate_repo_path_first_wins_and_duplicate_is_kept_untouched(bbw_config_dir):
+    first = {"repo_path": "/tmp/a", "base_branches": ["main"], "merge_tree_timeout_seconds": 900}
+    dup = {"repo_path": "/tmp/a", "base_branches": ["dev"], "merge_tree_timeout_seconds": 30}
+    _write_raw(bbw_config_dir, [first, dup])
+
+    loaded = config.load_config()
+
+    assert [r.base_branches for r in loaded.repos] == [["main"]]
+    assert loaded.timeout_fallbacks == {"/tmp/a": 900}  # not overwritten by the duplicate
+    config.save_config(config.set_poll_interval(loaded, 60))
+    assert _saved_repos(bbw_config_dir) == [first, dup]
+
+
+def test_removing_a_repo_also_drops_its_duplicate_so_it_does_not_reappear(bbw_config_dir):
+    entry = {"repo_path": "/tmp/a", "base_branches": ["main"]}
+    _write_raw(bbw_config_dir, [entry, dict(entry)])
+
+    config.save_config(config.remove_repo(config.load_config(), "/tmp/a"))
+
+    assert _saved_repos(bbw_config_dir) == []
+
+
+def test_unknown_keys_on_a_kept_entry_survive_a_save(bbw_config_dir):
+    _write_raw(bbw_config_dir, [{"repo_path": "/tmp/a", "base_branches": ["main"], "note": "hi"}])
+
+    config.save_config(config.add_repo(config.load_config(), "/tmp/b", ["main"]))
+
+    assert {r["repo_path"]: r.get("note") for r in _saved_repos(bbw_config_dir)} == {
+        "/tmp/a": "hi",
+        "/tmp/b": None,
+    }
+
+
+def test_fallback_log_line_truncates_a_huge_raw_value(bbw_config_dir):
+    from base_branch_watch.core import log
+
+    _write_raw(
+        bbw_config_dir,
+        [{"repo_path": "/tmp/a", "base_branches": [], "merge_tree_timeout_seconds": "x" * 5000}],
+    )
+
+    config.load_config(quarantine=True)
+
+    logged = log.log_path().read_text()
+    assert "x" * 90 in logged and "x" * 150 not in logged

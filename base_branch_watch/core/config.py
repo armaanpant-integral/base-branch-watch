@@ -35,6 +35,12 @@ class AppConfig:
     whose value was replaced by the default at load time. A read-only caller like the
     pre-push hook uses it to say so; save_config writes the raw value back unchanged so a
     save never erases the user's text (only an explicit edit to the repo's timeout does)."""
+    skipped_entries: list[object] = field(default_factory=list)
+    """Raw repo entries that could not be loaded (non-dict, missing/non-str/unhashable
+    repo_path, or a duplicate repo_path). Written back unchanged on save so a save never
+    silently erases a user's entry."""
+    extra_keys: Mapping[str, Mapping[str, object]] = field(default_factory=dict)
+    """repo_path -> keys on that entry this app does not know, kept across saves."""
 
 
 def _parse_merge_tree_timeout(repo_path: str, entry: dict, report: Callable[[str], None]) -> int:
@@ -46,10 +52,19 @@ def _parse_merge_tree_timeout(repo_path: str, entry: dict, report: Callable[[str
     if is_valid_merge_tree_timeout(raw):
         return raw
     report(
-        f"config: ignoring invalid merge_tree_timeout_seconds={raw!r} for {repo_path}; "
+        f"config: ignoring invalid merge_tree_timeout_seconds={_clip(raw)} for {repo_path}; "
         f"using default {DEFAULT_MERGE_TREE_TIMEOUT_SECONDS}"
     )
     return DEFAULT_MERGE_TREE_TIMEOUT_SECONDS
+
+
+_KNOWN_ENTRY_KEYS = frozenset({"repo_path", "base_branches", "merge_tree_timeout_seconds"})
+_MAX_LOGGED_RAW_CHARS = 100
+
+
+def _clip(value: object) -> str:
+    text = repr(value)
+    return text if len(text) <= _MAX_LOGGED_RAW_CHARS else text[:_MAX_LOGGED_RAW_CHARS] + "..."
 
 
 def load_config(*, quarantine: bool = False) -> AppConfig:
@@ -65,15 +80,36 @@ def load_config(*, quarantine: bool = False) -> AppConfig:
         return AppConfig()
 
     fallbacks: dict[str, object] = {}
+    skipped: list[object] = []
+    extras: dict[str, dict[str, object]] = {}
+    seen_paths: set[str] = set()
 
     try:
         repos = []
         for entry in raw.get("repos", []):
             if not isinstance(entry, dict):
+                skipped.append(entry)
+                report(f"config: skipping non-object repo entry {_clip(entry)}; kept as written")
                 continue
             repo_path = entry.get("repo_path")
             if not isinstance(repo_path, str):  # also guards unhashable paths
+                skipped.append(entry)
+                report(
+                    f"config: skipping repo entry without a string repo_path "
+                    f"{_clip(entry)}; kept as written"
+                )
                 continue
+            if repo_path in seen_paths:
+                skipped.append(entry)
+                report(
+                    f"config: skipping duplicate repo_path {repo_path}; "
+                    "first entry wins, duplicate kept as written"
+                )
+                continue
+            seen_paths.add(repo_path)
+            unknown = {k: v for k, v in entry.items() if k not in _KNOWN_ENTRY_KEYS}
+            if unknown:
+                extras[repo_path] = unknown
 
             def note_fallback(message: str, path: str = repo_path, entry: dict = entry) -> None:
                 fallbacks[path] = entry["merge_tree_timeout_seconds"]
@@ -93,7 +129,13 @@ def load_config(*, quarantine: bool = False) -> AppConfig:
         if quarantine:
             store.quarantine_file(CONFIG_FILENAME, "unexpected shape", report=report)
         return AppConfig()
-    return AppConfig(poll_interval_seconds=poll_interval, repos=repos, timeout_fallbacks=fallbacks)
+    return AppConfig(
+        poll_interval_seconds=poll_interval,
+        repos=repos,
+        timeout_fallbacks=fallbacks,
+        skipped_entries=skipped,
+        extra_keys=extras,
+    )
 
 
 def parse_base_branches(raw: str) -> list[str]:
@@ -129,6 +171,8 @@ def add_repo(cfg: AppConfig, repo_path: str, base_branches: list[str]) -> AppCon
         poll_interval_seconds=cfg.poll_interval_seconds,
         repos=remaining,
         timeout_fallbacks=dict(cfg.timeout_fallbacks),
+        skipped_entries=list(cfg.skipped_entries),
+        extra_keys=dict(cfg.extra_keys),
     )
 
 
@@ -139,10 +183,19 @@ def remove_repo(cfg: AppConfig, repo_path: str) -> AppConfig:
     """
     remaining = [r for r in cfg.repos if r.repo_path != repo_path]
     fallbacks = {p: v for p, v in cfg.timeout_fallbacks.items() if p != repo_path}
+    extras = {p: v for p, v in cfg.extra_keys.items() if p != repo_path}
+    # A duplicate of the removed path would otherwise resurrect it on the next load.
+    skipped = [
+        e
+        for e in cfg.skipped_entries
+        if not (isinstance(e, dict) and e.get("repo_path") == repo_path)
+    ]
     return AppConfig(
         poll_interval_seconds=cfg.poll_interval_seconds,
         repos=remaining,
         timeout_fallbacks=fallbacks,
+        skipped_entries=skipped,
+        extra_keys=extras,
     )
 
 
@@ -160,11 +213,16 @@ def set_poll_interval(cfg: AppConfig, seconds: int | str) -> AppConfig:
         poll_interval_seconds=clamped,
         repos=list(cfg.repos),
         timeout_fallbacks=dict(cfg.timeout_fallbacks),
+        skipped_entries=list(cfg.skipped_entries),
+        extra_keys=dict(cfg.extra_keys),
     )
 
 
-def _repo_payload(repo: RepoConfig, fallbacks: Mapping[str, object]) -> dict:
-    entry: dict = {"repo_path": repo.repo_path, "base_branches": list(repo.base_branches)}
+def _repo_payload(
+    repo: RepoConfig, fallbacks: Mapping[str, object], extras: Mapping[str, Mapping[str, object]]
+) -> dict:
+    entry: dict = dict(extras.get(repo.repo_path, {}))
+    entry |= {"repo_path": repo.repo_path, "base_branches": list(repo.base_branches)}
     if repo.merge_tree_timeout_seconds != DEFAULT_MERGE_TREE_TIMEOUT_SECONDS:
         entry["merge_tree_timeout_seconds"] = repo.merge_tree_timeout_seconds
     elif repo.repo_path in fallbacks:
@@ -177,6 +235,7 @@ def save_config(cfg: AppConfig) -> WriteResult:
     """Atomically persist AppConfig. Never raises; the result says whether it was saved."""
     payload = {
         "poll_interval_seconds": cfg.poll_interval_seconds,
-        "repos": [_repo_payload(r, cfg.timeout_fallbacks) for r in cfg.repos],
+        "repos": [_repo_payload(r, cfg.timeout_fallbacks, cfg.extra_keys) for r in cfg.repos]
+        + list(cfg.skipped_entries),
     }
     return store.write_object(CONFIG_FILENAME, payload, report=log.append)
