@@ -67,12 +67,18 @@ _WORST_KIND_RANK = {
 }
 
 
+DEFAULT_MERGE_TREE_TIMEOUT_SECONDS = 20
+MAX_MERGE_TREE_TIMEOUT_SECONDS = 600
+
+
 @dataclass
 class RepoConfig:
-    """A single watched repo: its filesystem path and base branch(es)."""
+    """A single watched repo: its filesystem path, base branch(es), and the
+    per-repo `git merge-tree` timeout (raise it for very large/rewritten bases)."""
 
     repo_path: str
     base_branches: list[str] = field(default_factory=list)
+    merge_tree_timeout_seconds: int = DEFAULT_MERGE_TREE_TIMEOUT_SECONDS
 
 
 @dataclass

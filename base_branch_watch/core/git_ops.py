@@ -15,6 +15,7 @@ from dataclasses import dataclass
 
 from base_branch_watch.core import log
 from base_branch_watch.core.models import (
+    DEFAULT_MERGE_TREE_TIMEOUT_SECONDS,
     IncomingCommit,
 )
 
@@ -313,9 +314,36 @@ def merge_base(repo_path: str, left: str, right: str, timeout: int = 10) -> str 
     return sha or None
 
 
+@dataclass(frozen=True)
+class MergeTreeOutcome:
+    """Result of a merge-tree dry run. conflict None = undeterminable;
+    timed_out separates "git ran too long" from every other failure."""
+
+    conflict: bool | None
+    paths: list[str]
+    timed_out: bool
+
+
 def merge_tree_dry_run(
-    repo_path: str, branch1: str, branch2: str, timeout: int = 20
+    repo_path: str,
+    branch1: str,
+    branch2: str,
+    timeout: int = DEFAULT_MERGE_TREE_TIMEOUT_SECONDS,
 ) -> tuple[bool, list[str]] | None:
+    """None-sentinel wrapper over merge_tree_dry_run_outcome: (conflict, paths),
+    or None when the result could not be determined (timeout included)."""
+    outcome = merge_tree_dry_run_outcome(repo_path, branch1, branch2, timeout)
+    if outcome.conflict is None:
+        return None
+    return (outcome.conflict, outcome.paths)
+
+
+def merge_tree_dry_run_outcome(
+    repo_path: str,
+    branch1: str,
+    branch2: str,
+    timeout: int = DEFAULT_MERGE_TREE_TIMEOUT_SECONDS,
+) -> MergeTreeOutcome:
     """`git merge-tree --write-tree --name-only -z -- branch1 branch2` dry run.
 
     Authoritative, non-mutating conflict check (git >= 2.38) -- writes an
@@ -336,20 +364,26 @@ def merge_tree_dry_run(
       typo'd base, or origin/<base> not yet fetched) -- NOT a conflict, and
       must never be parsed as one.
     - any other returncode                    -> a genuine error.
-    The last two cases both collapse to None, the same "couldn't determine"
-    sentinel used everywhere else in this file -- never confuse either with
-    a real conflict or a clean result.
+    The last two cases both report conflict=None ("couldn't determine") --
+    never confuse either with a real conflict or a clean result. A subprocess
+    timeout also reports conflict=None but with timed_out=True, so callers
+    can say "timed out" instead of "local git error".
     """
-    result = _try_git(
-        repo_path,
-        ["merge-tree", "--write-tree", "--name-only", "-z", "--", branch1, branch2],
-        timeout,
-        text=False,
-    )
-    if result is None:
-        return None
+    try:
+        result = _run_git(
+            repo_path,
+            ["merge-tree", "--write-tree", "--name-only", "-z", "--", branch1, branch2],
+            timeout,
+            text=False,
+        )
+    except subprocess.TimeoutExpired:
+        # No logging here: the pre-push hook shares this path and must not
+        # write to the app dir. The poller logs it in base_verdict.
+        return MergeTreeOutcome(conflict=None, paths=[], timed_out=True)
+    except OSError:
+        return MergeTreeOutcome(conflict=None, paths=[], timed_out=False)
     if result.returncode == 0:
-        return (False, [])
+        return MergeTreeOutcome(conflict=False, paths=[], timed_out=False)
     if result.returncode == 1 and result.stdout:
         parts = result.stdout.split(b"\x00")
         conflicted: list[str] = []
@@ -357,8 +391,9 @@ def merge_tree_dry_run(
             if part == b"":
                 break  # first empty part terminates the conflicted-path list
             conflicted.append(part.decode("utf-8", "surrogateescape"))
-        return (True, conflicted)
-    return None  # any other code, OR returncode==1 with empty stdout (unresolvable ref)
+        return MergeTreeOutcome(conflict=True, paths=conflicted, timed_out=False)
+    # any other code, OR returncode==1 with empty stdout (unresolvable ref)
+    return MergeTreeOutcome(conflict=None, paths=[], timed_out=False)
 
 
 def hooks_path(repo_path: str, timeout: int = 10) -> str | None:

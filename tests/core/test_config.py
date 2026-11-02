@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import os
 
+import pytest
+
 from base_branch_watch.core import config
 from base_branch_watch.core.models import RepoConfig
 
@@ -221,3 +223,79 @@ def test_default_load_config_never_writes_to_the_app_dir_even_on_a_corrupt_file(
 
     assert sorted(p.name for p in bbw_config_dir.iterdir()) == before
     assert not log.log_path().exists()
+
+
+def _write_raw_config(repo_entry: dict) -> None:
+    (config.config_dir() / config.CONFIG_FILENAME).write_text(
+        json.dumps({"poll_interval_seconds": 300, "repos": [repo_entry]})
+    )
+
+
+def test_merge_tree_timeout_defaults_to_20_when_absent(bbw_config_dir):
+    _write_raw_config({"repo_path": "/tmp/r", "base_branches": ["main"]})
+
+    assert config.load_config().repos[0].merge_tree_timeout_seconds == 20
+
+
+def test_merge_tree_timeout_valid_int_loads_and_round_trips(bbw_config_dir):
+    _write_raw_config(
+        {"repo_path": "/tmp/r", "base_branches": ["main"], "merge_tree_timeout_seconds": 90}
+    )
+    loaded = config.load_config()
+    assert loaded.repos[0].merge_tree_timeout_seconds == 90
+
+    config.save_config(loaded)
+
+    assert config.load_config().repos[0].merge_tree_timeout_seconds == 90
+
+
+def test_save_config_omits_the_default_timeout(bbw_config_dir):
+    config.save_config(
+        config.AppConfig(repos=[RepoConfig(repo_path="/tmp/r", base_branches=["main"])])
+    )
+
+    saved = json.loads((config.config_dir() / config.CONFIG_FILENAME).read_text())
+
+    assert "merge_tree_timeout_seconds" not in saved["repos"][0]
+
+
+@pytest.mark.parametrize("bad", ["90", 90.5, True, 0, -5, 601, None, [90]])
+def test_merge_tree_timeout_invalid_value_falls_back_and_is_logged(bbw_config_dir, bad):
+    from base_branch_watch.core import log
+
+    _write_raw_config(
+        {"repo_path": "/tmp/bad-repo", "base_branches": ["main"], "merge_tree_timeout_seconds": bad}
+    )
+
+    loaded = config.load_config(quarantine=True)
+
+    assert loaded.repos[0].merge_tree_timeout_seconds == 20
+    logged = log.log_path().read_text()
+    assert "/tmp/bad-repo" in logged
+    assert repr(bad) in logged
+
+
+def test_hook_style_load_ignores_invalid_timeout_silently(bbw_config_dir):
+    from base_branch_watch.core import log
+
+    _write_raw_config(
+        {"repo_path": "/tmp/r", "base_branches": ["main"], "merge_tree_timeout_seconds": 0}
+    )
+
+    loaded = config.load_config()
+
+    assert loaded.repos[0].merge_tree_timeout_seconds == 20
+    assert not log.log_path().exists()
+
+
+def test_add_repo_preserves_the_existing_entrys_timeout():
+    cfg = config.AppConfig(
+        repos=[
+            RepoConfig(repo_path="/tmp/r", base_branches=["main"], merge_tree_timeout_seconds=75)
+        ]
+    )
+
+    updated = config.add_repo(cfg, "/tmp/r", ["main", "develop"])
+
+    assert updated.repos[0].base_branches == ["main", "develop"]
+    assert updated.repos[0].merge_tree_timeout_seconds == 75

@@ -79,14 +79,21 @@ def main(argv: list[str] | None = None) -> int:
     overlap_paths: set[str] = set()
     gating = False
     real_conflict = False
+    timed_out_after: int | None = None
 
     for local_ref, local_sha, _remote_ref, _remote_sha in updates:
         if git_ops.is_delete(local_ref, local_sha):
             continue
         for base in matched_repo.base_branches:
             verdict = base_verdict.assess_base(
-                matched_repo.repo_path, base, local_sha, detailed=True
+                matched_repo.repo_path,
+                base,
+                local_sha,
+                detailed=True,
+                merge_tree_timeout=matched_repo.merge_tree_timeout_seconds,
             )
+            if verdict.merge_tree_timed_out:
+                timed_out_after = verdict.merge_tree_timeout_seconds
             overlap_paths |= verdict.local_changes
             per_base.append((f"origin/{base}", verdict.incoming_commits))
 
@@ -108,12 +115,18 @@ def main(argv: list[str] | None = None) -> int:
 
     # Routed through the same prompt either way so it's never an
     # unbypassable hard block (HOOK-03) -- only the message differs.
-    message = (
-        "Potential conflicts detected with the base branch."
-        if real_conflict
-        else "Could not determine whether the base branch conflicts "
-        "(fetch/network issue) -- gating to be safe."
-    )
+    if real_conflict:
+        message = "Potential conflicts detected with the base branch."
+    elif timed_out_after is not None:
+        message = (
+            f"Conflict check timed out after {timed_out_after}s (raise "
+            "merge_tree_timeout_seconds for this repo in config.json) -- gating to be safe."
+        )
+    else:
+        message = (
+            "Could not determine whether the base branch conflicts "
+            "(fetch/network issue) -- gating to be safe."
+        )
     allowed = prompt_push_anyway(message)
     return 0 if allowed else 1
 

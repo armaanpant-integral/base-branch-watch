@@ -9,7 +9,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from base_branch_watch.core import log, store
-from base_branch_watch.core.models import RepoConfig
+from base_branch_watch.core.models import (
+    DEFAULT_MERGE_TREE_TIMEOUT_SECONDS,
+    MAX_MERGE_TREE_TIMEOUT_SECONDS,
+    RepoConfig,
+)
 from base_branch_watch.core.store import WriteResult
 from base_branch_watch.core.store import config_dir as config_dir  # re-export: existing callers
 
@@ -27,6 +31,18 @@ class AppConfig:
     repos: list[RepoConfig] = field(default_factory=list)
 
 
+def _parse_merge_tree_timeout(repo_path: str, raw: object, report) -> int:
+    """Validated per-repo merge-tree timeout; anything but an int in 1..MAX
+    (bool, str, float, out of range) falls back to the default and is reported."""
+    if type(raw) is int and 1 <= raw <= MAX_MERGE_TREE_TIMEOUT_SECONDS:
+        return raw
+    report(
+        f"config: ignoring invalid merge_tree_timeout_seconds={raw!r} for {repo_path}; "
+        f"using default {DEFAULT_MERGE_TREE_TIMEOUT_SECONDS}"
+    )
+    return DEFAULT_MERGE_TREE_TIMEOUT_SECONDS
+
+
 def load_config(*, quarantine: bool = False) -> AppConfig:
     """Load AppConfig from disk, returning defaults if the file is missing or unusable.
 
@@ -41,7 +57,17 @@ def load_config(*, quarantine: bool = False) -> AppConfig:
 
     try:
         repos = [
-            RepoConfig(repo_path=r["repo_path"], base_branches=list(r.get("base_branches", [])))
+            RepoConfig(
+                repo_path=r["repo_path"],
+                base_branches=list(r.get("base_branches", [])),
+                merge_tree_timeout_seconds=(
+                    _parse_merge_tree_timeout(
+                        r["repo_path"], r["merge_tree_timeout_seconds"], report
+                    )
+                    if "merge_tree_timeout_seconds" in r
+                    else DEFAULT_MERGE_TREE_TIMEOUT_SECONDS
+                ),
+            )
             for r in raw.get("repos", [])
             if isinstance(r, dict) and "repo_path" in r
         ]
@@ -68,8 +94,20 @@ def add_repo(cfg: AppConfig, repo_path: str, base_branches: list[str]) -> AppCon
 
     Pure — does not perform I/O. Callers persist the result via save_config.
     """
+    existing = next((r for r in cfg.repos if r.repo_path == repo_path), None)
+    timeout = (
+        existing.merge_tree_timeout_seconds
+        if existing is not None
+        else DEFAULT_MERGE_TREE_TIMEOUT_SECONDS
+    )
     remaining = [r for r in cfg.repos if r.repo_path != repo_path]
-    remaining.append(RepoConfig(repo_path=repo_path, base_branches=list(base_branches)))
+    remaining.append(
+        RepoConfig(
+            repo_path=repo_path,
+            base_branches=list(base_branches),
+            merge_tree_timeout_seconds=timeout,
+        )
+    )
     return AppConfig(poll_interval_seconds=cfg.poll_interval_seconds, repos=remaining)
 
 
@@ -95,12 +133,17 @@ def set_poll_interval(cfg: AppConfig, seconds: int | str) -> AppConfig:
     return AppConfig(poll_interval_seconds=clamped, repos=list(cfg.repos))
 
 
+def _repo_payload(repo: RepoConfig) -> dict:
+    entry: dict = {"repo_path": repo.repo_path, "base_branches": list(repo.base_branches)}
+    if repo.merge_tree_timeout_seconds != DEFAULT_MERGE_TREE_TIMEOUT_SECONDS:
+        entry["merge_tree_timeout_seconds"] = repo.merge_tree_timeout_seconds
+    return entry
+
+
 def save_config(cfg: AppConfig) -> WriteResult:
     """Atomically persist AppConfig. Never raises; the result says whether it was saved."""
     payload = {
         "poll_interval_seconds": cfg.poll_interval_seconds,
-        "repos": [
-            {"repo_path": r.repo_path, "base_branches": list(r.base_branches)} for r in cfg.repos
-        ],
+        "repos": [_repo_payload(r) for r in cfg.repos],
     }
     return store.write_object(CONFIG_FILENAME, payload, report=log.append)

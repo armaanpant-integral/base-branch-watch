@@ -14,8 +14,9 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 
-from base_branch_watch.core import git_ops
+from base_branch_watch.core import git_ops, log
 from base_branch_watch.core.models import (
+    DEFAULT_MERGE_TREE_TIMEOUT_SECONDS,
     BranchStatus,
     IncomingCommit,
     RepoConfig,
@@ -57,10 +58,19 @@ class BaseVerdict:
     summary's per-commit overlap flag."""
     incoming_commits: list[IncomingCommit] = field(default_factory=list)
     """Commits on origin/<base> not in local_ref (detailed only)."""
+    merge_tree_timed_out: bool = False
+    """True when the merge-tree dry run hit its timeout (merge_conflict is None)."""
+    merge_tree_timeout_seconds: int = DEFAULT_MERGE_TREE_TIMEOUT_SECONDS
+    """The timeout the dry run ran under, for user-facing text."""
 
 
 def assess_base(
-    repo_path: str, base: str, local_ref: str = "HEAD", *, detailed: bool = False
+    repo_path: str,
+    base: str,
+    local_ref: str = "HEAD",
+    *,
+    detailed: bool = False,
+    merge_tree_timeout: int = DEFAULT_MERGE_TREE_TIMEOUT_SECONDS,
 ) -> BaseVerdict:
     """Fetch `base` (one retry) and assess `local_ref` against `origin/<base>`.
 
@@ -92,15 +102,17 @@ def assess_base(
 
     merge_conflict: bool | None = False
     conflict_paths: list[str] = []
+    merge_tree_timed_out = False
     # Only a branch with commits of its own can conflict on committed work.
     if not fetched:
         merge_conflict = None  # stale origin ref proves nothing
     elif behind > 0 and ahead > 0:
-        dry_run = git_ops.merge_tree_dry_run(repo_path, local_ref, origin_ref)
-        if dry_run is None:
-            merge_conflict = None
-        else:
-            merge_conflict, conflict_paths = dry_run
+        dry_run = git_ops.merge_tree_dry_run_outcome(
+            repo_path, local_ref, origin_ref, merge_tree_timeout
+        )
+        merge_conflict = dry_run.conflict
+        conflict_paths = dry_run.paths
+        merge_tree_timed_out = dry_run.timed_out
 
     working_tree_overlap: list[str] = []
     path_overlap: list[str] = []
@@ -149,6 +161,8 @@ def assess_base(
         paths_determinable=paths_determinable,
         local_changes=local_changes,
         incoming_commits=commits,
+        merge_tree_timed_out=merge_tree_timed_out,
+        merge_tree_timeout_seconds=merge_tree_timeout,
     )
 
 
@@ -185,6 +199,15 @@ def _branch_status(repo_path: str, verdict: BaseVerdict) -> BranchStatus:
                 paths |= set(verdict.conflict_paths)
             return conflict_risk(sorted(paths))
         if not verdict.paths_determinable:
+            if verdict.merge_tree_timed_out:
+                log.append(
+                    f"[WARN] merge-tree timed out after {verdict.merge_tree_timeout_seconds}s "
+                    f"in {repo_path} (base {base}); raise merge_tree_timeout_seconds "
+                    "for this repo in config.json"
+                )
+                return failed(
+                    f"conflict check timed out after {verdict.merge_tree_timeout_seconds}s"
+                )
             return failed(_REASON_CONFLICT_CHECK_FAILED)
         # merge-tree undeterminable: fall back to the path-overlap heuristic.
         if verdict.merge_conflict is None and verdict.path_overlap:
@@ -224,7 +247,12 @@ def check_repo(repo: RepoConfig) -> RepoStatus:
         current_branch=git_ops.current_branch(repo.repo_path),
         unpushed=git_ops.unpushed_count(repo.repo_path),
         branch_statuses=[
-            _branch_status(repo.repo_path, assess_base(repo.repo_path, base))
+            _branch_status(
+                repo.repo_path,
+                assess_base(
+                    repo.repo_path, base, merge_tree_timeout=repo.merge_tree_timeout_seconds
+                ),
+            )
             for base in repo.base_branches
         ],
         failure_reason=None,

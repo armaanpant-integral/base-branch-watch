@@ -177,3 +177,45 @@ def test_menu_and_push_gate_agree_when_the_merge_is_clean(
 
     assert menu.branch_statuses[0].kind != StatusKind.CONFLICT_RISK
     assert _hook_gates(clone_path, default_branch_name, monkeypatch, capsys) is False
+
+
+def test_hook_timed_out_merge_tree_gates_and_prompt_names_the_timeout(
+    fixture_repos_conflict_overlap, default_branch_name, bbw_config_dir, monkeypatch, capsys
+):
+    import subprocess
+
+    _origin, clone_path = fixture_repos_conflict_overlap
+    config_module.save_config(
+        config_module.AppConfig(
+            repos=[
+                RepoConfig(
+                    repo_path=clone_path,
+                    base_branches=[default_branch_name],
+                    merge_tree_timeout_seconds=9,
+                )
+            ]
+        )
+    )
+    local_sha = git_ops.resolve_ref(clone_path, "HEAD")
+    assert local_sha is not None
+    real_run_git = git_ops._run_git
+    seen_timeouts: list[int] = []
+
+    def merge_tree_times_out(repo_path, args, timeout, **kwargs):
+        if args[0] == "merge-tree":
+            seen_timeouts.append(timeout)
+            raise subprocess.TimeoutExpired(cmd="git", timeout=timeout)
+        return real_run_git(repo_path, args, timeout, **kwargs)
+
+    monkeypatch.setattr(git_ops, "_run_git", merge_tree_times_out)
+    monkeypatch.setattr("sys.stdin", io.StringIO(_pre_push_line(default_branch_name, local_sha)))
+    monkeypatch.chdir(clone_path)
+    _patch_no_tty(monkeypatch)
+
+    exit_code = hook.main(["origin", "git@example.com:test.git"])
+
+    assert exit_code == 0  # no tty: warns and allows
+    assert seen_timeouts == [9]
+    err = capsys.readouterr().err
+    assert "timed out after 9s" in err
+    assert "fetch/network issue" not in err

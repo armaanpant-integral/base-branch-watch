@@ -694,3 +694,56 @@ def test_incoming_commits_lists_both_paths_of_a_rename(
     commits = git_ops.incoming_commits(clone_path, mb, f"origin/{default_branch_name}")
 
     assert [c.changed_paths for c in commits] == [{"file.txt", "renamed.txt"}]
+
+
+def test_merge_tree_outcome_timeout_is_flagged(fixture_repos_up_to_date, default_branch_name):
+    _origin, clone_path = fixture_repos_up_to_date
+    error = subprocess.TimeoutExpired(cmd="git", timeout=1)
+
+    with patch("base_branch_watch.core.git_ops._run_git", side_effect=error):
+        outcome = git_ops.merge_tree_dry_run_outcome(
+            clone_path, "HEAD", f"origin/{default_branch_name}"
+        )
+
+    assert outcome == git_ops.MergeTreeOutcome(conflict=None, paths=[], timed_out=True)
+
+
+def test_merge_tree_outcome_oserror_is_not_a_timeout(fixture_repos_up_to_date, default_branch_name):
+    _origin, clone_path = fixture_repos_up_to_date
+
+    with patch("base_branch_watch.core.git_ops._run_git", side_effect=OSError("no git")):
+        outcome = git_ops.merge_tree_dry_run_outcome(
+            clone_path, "HEAD", f"origin/{default_branch_name}"
+        )
+
+    assert outcome == git_ops.MergeTreeOutcome(conflict=None, paths=[], timed_out=False)
+
+
+def test_merge_tree_outcome_unresolvable_ref_is_an_error_not_a_timeout(fixture_repos_up_to_date):
+    _origin, clone_path = fixture_repos_up_to_date
+
+    outcome = git_ops.merge_tree_dry_run_outcome(clone_path, "HEAD", "origin/no-such-branch")
+
+    assert outcome.conflict is None
+    assert outcome.timed_out is False
+
+
+def test_merge_tree_outcome_reports_a_clean_merge(fixture_repos_up_to_date, default_branch_name):
+    _origin, clone_path = fixture_repos_up_to_date
+
+    clean = git_ops.merge_tree_dry_run_outcome(clone_path, "HEAD", f"origin/{default_branch_name}")
+
+    assert (clean.conflict, clean.paths, clean.timed_out) == (False, [], False)
+
+
+def test_merge_tree_outcome_reports_conflict_paths(
+    fixture_repos_conflict_overlap, default_branch_name
+):
+    _origin, clone_path = fixture_repos_conflict_overlap
+    _run(["fetch", "origin"], Path(clone_path))
+
+    outcome = git_ops.merge_tree_dry_run_outcome(
+        clone_path, "HEAD", f"origin/{default_branch_name}"
+    )
+
+    assert (outcome.conflict, outcome.paths, outcome.timed_out) == (True, ["shared.txt"], False)

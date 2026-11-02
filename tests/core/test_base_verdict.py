@@ -133,3 +133,104 @@ def test_detailed_assessment_of_a_failed_fetch_stays_unfetched_and_undecided(
     assert verdict.fetch_ok is False
     assert verdict.head_sha is None
     assert verdict.merge_conflict is None
+
+
+def _merge_tree_times_out(recorded: list[int]):
+    """A _run_git stand-in: merge-tree times out (recording the timeout it was
+    given); every other git call runs for real."""
+    import subprocess
+
+    real_run_git = git_ops._run_git
+
+    def fake(repo_path, args, timeout, **kwargs):
+        if args[0] == "merge-tree":
+            recorded.append(timeout)
+            raise subprocess.TimeoutExpired(cmd="git", timeout=timeout)
+        return real_run_git(repo_path, args, timeout, **kwargs)
+
+    return fake
+
+
+def test_config_json_timeout_reaches_the_merge_tree_subprocess_via_check_repo(
+    fixture_repos_conflict_overlap, default_branch_name, bbw_config_dir
+):
+    from unittest.mock import patch
+
+    from base_branch_watch.core import config
+    from base_branch_watch.core.models import RepoConfig
+
+    _origin, clone_path = fixture_repos_conflict_overlap
+    config.save_config(
+        config.AppConfig(
+            repos=[
+                RepoConfig(
+                    repo_path=clone_path,
+                    base_branches=[default_branch_name],
+                    merge_tree_timeout_seconds=7,
+                )
+            ]
+        )
+    )
+    repo = config.load_config().repos[0]
+    recorded: list[int] = []
+
+    with patch("base_branch_watch.core.git_ops._run_git", _merge_tree_times_out(recorded)):
+        status = base_verdict.check_repo(repo)
+        verdict = base_verdict.assess_base(
+            clone_path,
+            default_branch_name,
+            merge_tree_timeout=repo.merge_tree_timeout_seconds,
+        )
+
+    assert recorded == [7, 7]
+    assert verdict.merge_conflict is None
+    assert verdict.merge_tree_timed_out is True
+    assert verdict.merge_tree_timeout_seconds == 7
+    assert status.branch_statuses[0].base == default_branch_name
+
+
+def test_timeout_with_undeterminable_paths_reports_timed_out_not_local_git_error(
+    fixture_repos_conflict_overlap, default_branch_name
+):
+    from unittest.mock import patch
+
+    from base_branch_watch.core.models import RepoConfig
+
+    _origin, clone_path = fixture_repos_conflict_overlap
+    repo = RepoConfig(
+        repo_path=clone_path, base_branches=[default_branch_name], merge_tree_timeout_seconds=7
+    )
+
+    with (
+        patch("base_branch_watch.core.git_ops._run_git", _merge_tree_times_out([])),
+        patch("base_branch_watch.core.git_ops.merge_base", return_value=None),
+    ):
+        status = base_verdict.check_repo(repo)
+
+    assert status.branch_statuses[0].reason == "conflict check timed out after 7s"
+
+
+def test_non_timeout_merge_tree_failure_still_reports_local_git_error(
+    fixture_repos_conflict_overlap, default_branch_name
+):
+    import subprocess
+    from unittest.mock import patch
+
+    from base_branch_watch.core.models import RepoConfig
+
+    _origin, clone_path = fixture_repos_conflict_overlap
+    repo = RepoConfig(repo_path=clone_path, base_branches=[default_branch_name])
+    real_run_git = git_ops._run_git
+
+    def merge_tree_exits_128(repo_path, args, timeout, **kwargs):
+        if args[0] == "merge-tree":
+            return subprocess.CompletedProcess(args, 128, b"", b"fatal")
+        return real_run_git(repo_path, args, timeout, **kwargs)
+
+    with (
+        patch("base_branch_watch.core.git_ops._run_git", merge_tree_exits_128),
+        patch("base_branch_watch.core.git_ops.merge_base", return_value=None),
+    ):
+        status = base_verdict.check_repo(repo)
+
+    assert status.branch_statuses[0].reason == "conflict check failed - local git error"
