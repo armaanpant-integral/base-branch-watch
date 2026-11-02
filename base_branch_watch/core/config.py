@@ -6,13 +6,14 @@ config_dir()); this module owns what the config means.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from base_branch_watch.core import log, store
 from base_branch_watch.core.models import (
     DEFAULT_MERGE_TREE_TIMEOUT_SECONDS,
-    MAX_MERGE_TREE_TIMEOUT_SECONDS,
     RepoConfig,
+    is_valid_merge_tree_timeout,
 )
 from base_branch_watch.core.store import WriteResult
 from base_branch_watch.core.store import config_dir as config_dir  # re-export: existing callers
@@ -29,12 +30,19 @@ CONFIG_FILENAME = "config.json"
 class AppConfig:
     poll_interval_seconds: int = DEFAULT_POLL_INTERVAL_SECONDS
     repos: list[RepoConfig] = field(default_factory=list)
+    timeout_fallbacks: frozenset[str] = frozenset()
+    """repo_paths whose configured merge_tree_timeout_seconds was invalid and replaced by
+    the default at load time (not persisted), so a read-only caller like the pre-push
+    hook can say so instead of silently using the default."""
 
 
-def _parse_merge_tree_timeout(repo_path: str, raw: object, report) -> int:
-    """Validated per-repo merge-tree timeout; anything but an int in 1..MAX
-    (bool, str, float, out of range) falls back to the default and is reported."""
-    if type(raw) is int and 1 <= raw <= MAX_MERGE_TREE_TIMEOUT_SECONDS:
+def _parse_merge_tree_timeout(repo_path: str, entry: dict, report: Callable[[str], None]) -> int:
+    """Validated per-repo merge-tree timeout. Absent -> default; anything but an int in
+    1..MAX (bool, str, float, out of range) falls back to the default and is reported."""
+    if "merge_tree_timeout_seconds" not in entry:
+        return DEFAULT_MERGE_TREE_TIMEOUT_SECONDS
+    raw = entry["merge_tree_timeout_seconds"]
+    if is_valid_merge_tree_timeout(raw):
         return raw
     report(
         f"config: ignoring invalid merge_tree_timeout_seconds={raw!r} for {repo_path}; "
@@ -55,17 +63,21 @@ def load_config(*, quarantine: bool = False) -> AppConfig:
     if raw is None:
         return AppConfig()
 
+    fallbacks: set[str] = set()
+
+    def note_fallback(message: str, repo_path: str) -> None:
+        fallbacks.add(repo_path)
+        report(message)
+
     try:
         repos = [
             RepoConfig(
                 repo_path=r["repo_path"],
                 base_branches=list(r.get("base_branches", [])),
-                merge_tree_timeout_seconds=(
-                    _parse_merge_tree_timeout(
-                        r["repo_path"], r["merge_tree_timeout_seconds"], report
-                    )
-                    if "merge_tree_timeout_seconds" in r
-                    else DEFAULT_MERGE_TREE_TIMEOUT_SECONDS
+                merge_tree_timeout_seconds=_parse_merge_tree_timeout(
+                    r["repo_path"],
+                    r,
+                    lambda message, path=r["repo_path"]: note_fallback(message, path),
                 ),
             )
             for r in raw.get("repos", [])
@@ -76,7 +88,9 @@ def load_config(*, quarantine: bool = False) -> AppConfig:
         if quarantine:
             store.quarantine_file(CONFIG_FILENAME, "unexpected shape", report=report)
         return AppConfig()
-    return AppConfig(poll_interval_seconds=poll_interval, repos=repos)
+    return AppConfig(
+        poll_interval_seconds=poll_interval, repos=repos, timeout_fallbacks=frozenset(fallbacks)
+    )
 
 
 def parse_base_branches(raw: str) -> list[str]:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -640,23 +641,6 @@ def test_try_git_collapses_timeout_and_oserror_to_none(error):
         assert git_ops._try_git("/anywhere", ["status"], 1) is None
 
 
-@pytest.mark.parametrize(
-    "error", [subprocess.TimeoutExpired(cmd="git", timeout=1), OSError("no git")]
-)
-def test_merge_tree_dry_run_goes_through_the_shared_runner(
-    error, fixture_repos_up_to_date, default_branch_name
-):
-    """Used to call subprocess.run directly; a runner failure must read as
-    'undeterminable' (None), same as every sibling wrapper - even on a repo
-    where the real dry run would have answered 'clean'."""
-    _origin, clone_path = fixture_repos_up_to_date
-    origin_ref = f"origin/{default_branch_name}"
-    assert git_ops.merge_tree_dry_run(clone_path, "HEAD", origin_ref) == (False, [])
-
-    with patch("base_branch_watch.core.git_ops._run_git", side_effect=error):
-        assert git_ops.merge_tree_dry_run(clone_path, "HEAD", origin_ref) is None
-
-
 def _origin_commit(origin_dir: str, name: str, content: str, message: str) -> None:
     (Path(origin_dir) / name).write_text(content)
     _run(["add", name], Path(origin_dir))
@@ -696,54 +680,114 @@ def test_incoming_commits_lists_both_paths_of_a_rename(
     assert [c.changed_paths for c in commits] == [{"file.txt", "renamed.txt"}]
 
 
-def test_merge_tree_outcome_timeout_is_flagged(fixture_repos_up_to_date, default_branch_name):
+def test_merge_tree_check_timeout_is_timed_out_with_the_seconds(
+    fixture_repos_up_to_date, default_branch_name
+):
     _origin, clone_path = fixture_repos_up_to_date
     error = subprocess.TimeoutExpired(cmd="git", timeout=1)
 
     with patch("base_branch_watch.core.git_ops._run_git", side_effect=error):
-        outcome = git_ops.merge_tree_dry_run_outcome(
-            clone_path, "HEAD", f"origin/{default_branch_name}"
+        outcome = git_ops.merge_tree_check(
+            clone_path, "HEAD", f"origin/{default_branch_name}", timeout=13
         )
 
-    assert outcome == git_ops.MergeTreeOutcome(conflict=None, paths=[], timed_out=True)
+    assert outcome == git_ops.TimedOut(seconds=13)
 
 
-def test_merge_tree_outcome_oserror_is_not_a_timeout(fixture_repos_up_to_date, default_branch_name):
+def test_merge_tree_check_oserror_is_undeterminable_with_the_cause(
+    fixture_repos_up_to_date, default_branch_name
+):
     _origin, clone_path = fixture_repos_up_to_date
 
     with patch("base_branch_watch.core.git_ops._run_git", side_effect=OSError("no git")):
-        outcome = git_ops.merge_tree_dry_run_outcome(
-            clone_path, "HEAD", f"origin/{default_branch_name}"
+        outcome = git_ops.merge_tree_check(clone_path, "HEAD", f"origin/{default_branch_name}")
+
+    assert outcome == git_ops.Undeterminable(cause="no git")
+
+
+def test_merge_tree_check_nonzero_exit_carries_the_first_stderr_line(
+    fixture_repos_up_to_date, default_branch_name, merge_tree_stub
+):
+    _origin, clone_path = fixture_repos_up_to_date
+    merge_tree_stub(
+        lambda args, timeout: subprocess.CompletedProcess(args, 128, b"", b"\nfatal: boom\nmore\n")
+    )
+
+    outcome = git_ops.merge_tree_check(clone_path, "HEAD", f"origin/{default_branch_name}")
+
+    assert outcome == git_ops.Undeterminable(cause="fatal: boom")
+
+
+def test_merge_tree_check_nonzero_exit_without_stderr_names_the_exit_code(
+    fixture_repos_up_to_date, default_branch_name, merge_tree_stub
+):
+    _origin, clone_path = fixture_repos_up_to_date
+    merge_tree_stub(lambda args, timeout: subprocess.CompletedProcess(args, 7, b"", b""))
+
+    outcome = git_ops.merge_tree_check(clone_path, "HEAD", f"origin/{default_branch_name}")
+
+    assert outcome == git_ops.Undeterminable(cause="git merge-tree exited 7")
+
+
+def test_merge_tree_check_survives_timeout_expired_with_partial_output(
+    fixture_repos_up_to_date, default_branch_name, monkeypatch
+):
+    """Patch subprocess.run itself (not _run_git): the real runner must let a
+    TimeoutExpired - carrying partial stdout/stderr, as the real one does - reach
+    merge_tree_check, which reports TimedOut."""
+    _origin, clone_path = fixture_repos_up_to_date
+
+    def hang(cmd, **kwargs):
+        raise subprocess.TimeoutExpired(
+            cmd=cmd, timeout=kwargs["timeout"], output=b"abc", stderr=b"x"
         )
 
-    assert outcome == git_ops.MergeTreeOutcome(conflict=None, paths=[], timed_out=False)
+    monkeypatch.setattr(subprocess, "run", hang)
+
+    outcome = git_ops.merge_tree_check(
+        clone_path, "HEAD", f"origin/{default_branch_name}", timeout=5
+    )
+
+    assert outcome == git_ops.TimedOut(seconds=5)
 
 
-def test_merge_tree_outcome_unresolvable_ref_is_an_error_not_a_timeout(fixture_repos_up_to_date):
+def test_merge_tree_check_really_times_out_on_a_hanging_git(
+    fixture_repos_up_to_date, default_branch_name, tmp_path, monkeypatch
+):
+    """A real process that outlives the timeout: a stand-in `git` that sleeps."""
+    _origin, clone_path = fixture_repos_up_to_date
+    shim = tmp_path / "git"
+    shim.write_text("#!/bin/sh\nexec sleep 30\n")
+    shim.chmod(0o755)
+    monkeypatch.setattr(git_ops, "GIT", str(shim))
+
+    started = time.monotonic()
+    outcome = git_ops.merge_tree_check(
+        clone_path, "HEAD", f"origin/{default_branch_name}", timeout=1
+    )
+
+    assert outcome == git_ops.TimedOut(seconds=1)
+    assert time.monotonic() - started < 10
+
+
+def test_merge_tree_check_reports_a_clean_merge(fixture_repos_up_to_date, default_branch_name):
     _origin, clone_path = fixture_repos_up_to_date
 
-    outcome = git_ops.merge_tree_dry_run_outcome(clone_path, "HEAD", "origin/no-such-branch")
+    outcome = git_ops.merge_tree_check(clone_path, "HEAD", f"origin/{default_branch_name}")
 
-    assert outcome.conflict is None
-    assert outcome.timed_out is False
-
-
-def test_merge_tree_outcome_reports_a_clean_merge(fixture_repos_up_to_date, default_branch_name):
-    _origin, clone_path = fixture_repos_up_to_date
-
-    clean = git_ops.merge_tree_dry_run_outcome(clone_path, "HEAD", f"origin/{default_branch_name}")
-
-    assert (clean.conflict, clean.paths, clean.timed_out) == (False, [], False)
+    assert outcome == git_ops.Clean()
 
 
-def test_merge_tree_outcome_reports_conflict_paths(
+def test_merge_tree_check_reports_conflict_paths(
     fixture_repos_conflict_overlap, default_branch_name
 ):
     _origin, clone_path = fixture_repos_conflict_overlap
     _run(["fetch", "origin"], Path(clone_path))
 
-    outcome = git_ops.merge_tree_dry_run_outcome(
-        clone_path, "HEAD", f"origin/{default_branch_name}"
-    )
+    outcome = git_ops.merge_tree_check(clone_path, "HEAD", f"origin/{default_branch_name}")
 
-    assert (outcome.conflict, outcome.paths, outcome.timed_out) == (True, ["shared.txt"], False)
+    assert outcome == git_ops.Conflicted(paths=("shared.txt",))
+
+
+def test_timed_out_text_is_the_one_wording():
+    assert git_ops.timed_out_text(7) == "conflict check timed out after 7s"

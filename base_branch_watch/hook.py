@@ -18,7 +18,8 @@ import os
 import sys
 
 from base_branch_watch.core import base_verdict, config, git_ops, hook_summary
-from base_branch_watch.core.models import IncomingCommit
+from base_branch_watch.core.git_ops import TimedOut
+from base_branch_watch.core.models import DEFAULT_MERGE_TREE_TIMEOUT_SECONDS, IncomingCommit
 
 
 def prompt_push_anyway(message: str) -> bool:
@@ -79,7 +80,8 @@ def main(argv: list[str] | None = None) -> int:
     overlap_paths: set[str] = set()
     gating = False
     real_conflict = False
-    timed_out_after: int | None = None
+    longest_timeout: int | None = None  # largest TimedOut across bases
+    fetch_or_other_failure = False
 
     for local_ref, local_sha, _remote_ref, _remote_sha in updates:
         if git_ops.is_delete(local_ref, local_sha):
@@ -92,8 +94,8 @@ def main(argv: list[str] | None = None) -> int:
                 detailed=True,
                 merge_tree_timeout=matched_repo.merge_tree_timeout_seconds,
             )
-            if verdict.merge_tree_timed_out:
-                timed_out_after = verdict.merge_tree_timeout_seconds
+            if isinstance(verdict.merge_check, TimedOut):
+                longest_timeout = max(longest_timeout or 0, verdict.merge_check.seconds)
             overlap_paths |= verdict.local_changes
             per_base.append((f"origin/{base}", verdict.incoming_commits))
 
@@ -103,6 +105,8 @@ def main(argv: list[str] | None = None) -> int:
                 # not run at all: gates the push, but is NOT a real conflict --
                 # the prompt message below must not overclaim.
                 gating = True
+                if not isinstance(verdict.merge_check, TimedOut):
+                    fetch_or_other_failure = True
             elif verdict.merge_conflict:
                 gating = True
                 real_conflict = True
@@ -115,17 +119,23 @@ def main(argv: list[str] | None = None) -> int:
 
     # Routed through the same prompt either way so it's never an
     # unbypassable hard block (HOOK-03) -- only the message differs.
+    parts: list[str] = []
     if real_conflict:
-        message = "Potential conflicts detected with the base branch."
-    elif timed_out_after is not None:
-        message = (
-            f"Conflict check timed out after {timed_out_after}s (raise "
-            "merge_tree_timeout_seconds for this repo in config.json) -- gating to be safe."
+        parts.append("Potential conflicts detected with the base branch.")
+    if longest_timeout is not None:
+        parts.append(
+            f"{git_ops.timed_out_text(longest_timeout).capitalize()} (raise "
+            "merge_tree_timeout_seconds for this repo in config.json)."
         )
-    else:
-        message = (
-            "Could not determine whether the base branch conflicts "
-            "(fetch/network issue) -- gating to be safe."
+    if fetch_or_other_failure:
+        parts.append("Could not determine whether the base branch conflicts (fetch/network issue).")
+    message = " ".join(parts)
+    if not real_conflict:
+        message = message.rstrip(".") + " -- gating to be safe."
+    if matched_repo.repo_path in cfg.timeout_fallbacks:
+        message += (
+            " Note: merge_tree_timeout_seconds in config.json is invalid; "
+            f"using the default {DEFAULT_MERGE_TREE_TIMEOUT_SECONDS}s."
         )
     allowed = prompt_push_anyway(message)
     return 0 if allowed else 1

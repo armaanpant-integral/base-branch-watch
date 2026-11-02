@@ -10,60 +10,59 @@ from base_branch_watch.core import git_ops
 GIT = "/usr/bin/git"
 
 
-def test_merge_tree_dry_run_clean_merge_returns_false_empty(fixture_repos, default_branch_name):
+def test_merge_tree_check_clean_merge_is_clean(fixture_repos, default_branch_name):
     _origin, clone_path = fixture_repos
     git_ops.fetch(clone_path, default_branch_name)
 
-    result = git_ops.merge_tree_dry_run(clone_path, "HEAD", f"origin/{default_branch_name}")
+    result = git_ops.merge_tree_check(clone_path, "HEAD", f"origin/{default_branch_name}")
 
-    assert result == (False, [])
+    assert result == git_ops.Clean()
 
 
-def test_merge_tree_dry_run_detects_real_conflict(
+def test_merge_tree_check_detects_real_conflict(
     fixture_repos_conflict_overlap, default_branch_name
 ):
     _origin, clone_path = fixture_repos_conflict_overlap
     git_ops.fetch(clone_path, default_branch_name)
 
-    result = git_ops.merge_tree_dry_run(clone_path, "HEAD", f"origin/{default_branch_name}")
+    result = git_ops.merge_tree_check(clone_path, "HEAD", f"origin/{default_branch_name}")
 
-    assert result is not None
-    has_conflicts, paths = result
-    assert has_conflicts is True
-    assert "shared.txt" in paths
+    assert isinstance(result, git_ops.Conflicted)
+    assert "shared.txt" in result.paths
 
 
-def test_merge_tree_dry_run_no_common_ancestor_returns_none(
+def test_merge_tree_check_no_common_ancestor_is_undeterminable(
     fixture_repos_no_common_ancestor, default_branch_name
 ):
     _origin, clone_path = fixture_repos_no_common_ancestor
     git_ops.fetch(clone_path, default_branch_name)
 
-    result = git_ops.merge_tree_dry_run(clone_path, "HEAD", f"origin/{default_branch_name}")
+    result = git_ops.merge_tree_check(clone_path, "HEAD", f"origin/{default_branch_name}")
 
-    assert result is None
+    assert isinstance(result, git_ops.Undeterminable)
 
 
-def test_merge_tree_dry_run_unresolvable_ref_returns_none_not_conflict(fixture_repos):
+def test_merge_tree_check_unresolvable_ref_is_undeterminable_not_conflict(fixture_repos):
     """RESEARCH.md Pitfall 3b: an unfetched/nonexistent base ref also exits 1,
     but with completely empty stdout -- this is NOT a conflict and must not
-    be parsed as (True, [])."""
+    be parsed as Conflicted."""
     _origin, clone_path = fixture_repos
 
-    result = git_ops.merge_tree_dry_run(clone_path, "HEAD", "origin/does-not-exist")
+    result = git_ops.merge_tree_check(clone_path, "HEAD", "origin/does-not-exist")
 
-    assert result is None
+    assert isinstance(result, git_ops.Undeterminable)
+    assert result.cause  # git's own first stderr line, e.g. "fatal: ..."
 
 
-def test_merge_tree_dry_run_rejects_dash_prefixed_branch_as_flag(fixture_repos):
+def test_merge_tree_check_rejects_dash_prefixed_branch_as_flag(fixture_repos):
     """Argument-injection guard mirroring test_fetch_rejects_dash_prefixed_base_as_flag:
     with the '--' separator in place, a flag-shaped branch string is treated
     as a literal (nonexistent) ref, never as a real merge-tree flag."""
     _origin, clone_path = fixture_repos
 
-    result = git_ops.merge_tree_dry_run(clone_path, "HEAD", "--stdin")
+    result = git_ops.merge_tree_check(clone_path, "HEAD", "--stdin")
 
-    assert result is None
+    assert isinstance(result, git_ops.Undeterminable)
 
 
 def test_hooks_path_resolves_default_dot_git_hooks_dir(fixture_repos):
