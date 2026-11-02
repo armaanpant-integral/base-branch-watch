@@ -120,6 +120,26 @@ There are two separate log files, and they're not the same thing:
 
 **When you `git push`:** you'll always see a short summary of what's new on the base branch. If - and only if - a real conflict would result, you're asked "Push anyway? [y/N]"; answer `n` to abort and pull/rebase first. With no terminal available (pushes run by an IDE or agent) the warning is printed and the push is allowed. Set `BBWATCH_SKIP_GATE=1` to bypass the check entirely for one push.
 
+## Configuration
+
+Watched repos live in `~/Library/Application Support/base-branch-watch/config.json`. The menu edits `repo_path` and `base_branches`; the timeout below is hand-edited:
+
+```json
+{
+  "poll_interval_seconds": 300,
+  "repos": [
+    {
+      "repo_path": "/Users/you/code/big-repo",
+      "base_branches": ["main"],
+      "merge_tree_timeout_seconds": 90
+    }
+  ]
+}
+```
+
+- `merge_tree_timeout_seconds` (optional, whole number 1-600, default 20) - how long the conflict check (`git merge-tree`) may run per base branch. Raise it for repos with very large or rewritten base branches. Invalid values (text, decimals, true/false, zero, negatives, above 600) fall back to 20 and are noted in the app log.
+- When the check runs out of time the menu always says so: the row reads "conflict check timed out after Ns" when nothing else can decide, or keeps its conflict-risk/diverged/behind status with "- conflict check timed out after Ns" appended; the app log gets one `[WARN]` per change. The push prompt says it too, and an invalid value in config.json is called out there. "conflict check failed - local git error" means git itself failed (bad ref, no common ancestor, nonzero exit - the log has the cause), which a longer timeout will not fix.
+
 ## Known Issues
 
 - **Pre-push hook silently fails (forcing `--no-verify`) if `.venv`'s files carry macOS's hidden flag - fixed on 2026-08-30, watch for recurrence.** Python 3.12+'s `site.py` silently skips loading any `.pth` file that has the filesystem-level "hidden" attribute (`UF_HIDDEN`, distinct from a dotfile name) - this is a CPython security hardening, not a bug in this project. If something (a sync tool, an install script, `chflags`) ever marks `.venv/lib/**` as hidden, the editable install's `.pth` file stops being read, `python3 -m base_branch_watch.hook` starts raising `ModuleNotFoundError: No module named 'base_branch_watch'` for every watched repo *except* base-branch-watch's own (which accidentally still works because of `cwd`-based import fallback), and every `git push` in those repos gets hard-blocked regardless of actual conflict status. Symptom: you find yourself needing `git push --no-verify` "sometimes" for no obvious reason. Check with `ls -lO .venv/lib/python3.12/site-packages/` (a `hidden` column means this is happening) and fix with `chflags -R nohidden .venv`; confirm the fix by running `cd /tmp && <path to venv>/bin/python3 -c "import base_branch_watch"` from that unrelated cwd and checking it no longer raises `ModuleNotFoundError`. Do not reach for `--no-verify` as a standing workaround - it skips the conflict-risk gate entirely, which defeats the point of this tool; run the `chflags` fix instead and confirm with the `/tmp`-cwd import check above.

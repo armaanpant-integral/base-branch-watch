@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import os
 
+import pytest
+
 from base_branch_watch.core import config
 from base_branch_watch.core.models import RepoConfig
 
@@ -221,3 +223,335 @@ def test_default_load_config_never_writes_to_the_app_dir_even_on_a_corrupt_file(
 
     assert sorted(p.name for p in bbw_config_dir.iterdir()) == before
     assert not log.log_path().exists()
+
+
+def _write_raw_config(repo_entry: dict) -> None:
+    (config.config_dir() / config.CONFIG_FILENAME).write_text(
+        json.dumps({"poll_interval_seconds": 300, "repos": [repo_entry]})
+    )
+
+
+def test_merge_tree_timeout_defaults_to_20_when_absent(bbw_config_dir):
+    _write_raw_config({"repo_path": "/tmp/r", "base_branches": ["main"]})
+
+    assert config.load_config().repos[0].merge_tree_timeout_seconds == 20
+
+
+def test_merge_tree_timeout_valid_int_loads_and_round_trips(bbw_config_dir):
+    _write_raw_config(
+        {"repo_path": "/tmp/r", "base_branches": ["main"], "merge_tree_timeout_seconds": 90}
+    )
+    loaded = config.load_config()
+    assert loaded.repos[0].merge_tree_timeout_seconds == 90
+
+    config.save_config(loaded)
+
+    assert config.load_config().repos[0].merge_tree_timeout_seconds == 90
+
+
+def test_save_config_omits_the_default_timeout(bbw_config_dir):
+    config.save_config(
+        config.AppConfig(repos=[RepoConfig(repo_path="/tmp/r", base_branches=["main"])])
+    )
+
+    saved = json.loads((config.config_dir() / config.CONFIG_FILENAME).read_text())
+
+    assert "merge_tree_timeout_seconds" not in saved["repos"][0]
+
+
+@pytest.mark.parametrize("bad", ["90", 90.5, True, 0, -5, 601, None, [90]])
+def test_merge_tree_timeout_invalid_value_falls_back_and_is_logged(bbw_config_dir, bad):
+    from base_branch_watch.core import log
+
+    _write_raw_config(
+        {"repo_path": "/tmp/bad-repo", "base_branches": ["main"], "merge_tree_timeout_seconds": bad}
+    )
+
+    loaded = config.load_config(quarantine=True)
+
+    assert loaded.repos[0].merge_tree_timeout_seconds == 20
+    logged = log.log_path().read_text()
+    assert "/tmp/bad-repo" in logged
+    assert repr(bad) in logged
+
+
+def test_hook_style_load_ignores_invalid_timeout_silently(bbw_config_dir):
+    from base_branch_watch.core import log
+
+    _write_raw_config(
+        {"repo_path": "/tmp/r", "base_branches": ["main"], "merge_tree_timeout_seconds": 0}
+    )
+
+    loaded = config.load_config()
+
+    assert loaded.repos[0].merge_tree_timeout_seconds == 20
+    assert not log.log_path().exists()
+
+
+def test_add_repo_preserves_the_existing_entrys_timeout():
+    cfg = config.AppConfig(
+        repos=[
+            RepoConfig(repo_path="/tmp/r", base_branches=["main"], merge_tree_timeout_seconds=75)
+        ]
+    )
+
+    updated = config.add_repo(cfg, "/tmp/r", ["main", "develop"])
+
+    assert updated.repos[0].base_branches == ["main", "develop"]
+    assert updated.repos[0].merge_tree_timeout_seconds == 75
+
+
+@pytest.mark.parametrize("edge", [1, 600])
+def test_merge_tree_timeout_boundaries_are_accepted(bbw_config_dir, edge):
+    _write_raw_config(
+        {"repo_path": "/tmp/r", "base_branches": ["main"], "merge_tree_timeout_seconds": edge}
+    )
+
+    assert config.load_config().repos[0].merge_tree_timeout_seconds == edge
+
+
+def test_repo_config_rejects_an_out_of_range_timeout():
+    for bad in (0, 601, True, "20", 1.5):
+        with pytest.raises(ValueError, match="merge_tree_timeout_seconds"):
+            RepoConfig(repo_path="/tmp/r", merge_tree_timeout_seconds=bad)  # type: ignore[arg-type]
+    assert (
+        RepoConfig(repo_path="/tmp/r", merge_tree_timeout_seconds=600).merge_tree_timeout_seconds
+        == 600
+    )
+
+
+def test_non_dict_repo_entry_is_skipped_and_the_rest_survive(bbw_config_dir):
+    (config.config_dir()).mkdir(parents=True, exist_ok=True)
+    (config.config_dir() / config.CONFIG_FILENAME).write_text(
+        json.dumps(
+            {
+                "repos": [
+                    "not-a-dict",
+                    {"repo_path": "/tmp/ok", "base_branches": ["main"]},
+                ]
+            }
+        )
+    )
+
+    assert [r.repo_path for r in config.load_config().repos] == ["/tmp/ok"]
+
+
+def test_a_bad_timeout_on_one_repo_leaves_the_others_intact(bbw_config_dir):
+    (config.config_dir()).mkdir(parents=True, exist_ok=True)
+    (config.config_dir() / config.CONFIG_FILENAME).write_text(
+        json.dumps(
+            {
+                "repos": [
+                    {
+                        "repo_path": "/tmp/a",
+                        "base_branches": ["main"],
+                        "merge_tree_timeout_seconds": 90,
+                    },
+                    {
+                        "repo_path": "/tmp/b",
+                        "base_branches": ["main"],
+                        "merge_tree_timeout_seconds": 0,
+                    },
+                    {
+                        "repo_path": "/tmp/c",
+                        "base_branches": ["dev"],
+                        "merge_tree_timeout_seconds": 45,
+                    },
+                ]
+            }
+        )
+    )
+
+    loaded = config.load_config()
+
+    assert [(r.repo_path, r.merge_tree_timeout_seconds) for r in loaded.repos] == [
+        ("/tmp/a", 90),
+        ("/tmp/b", 20),
+        ("/tmp/c", 45),
+    ]
+    assert set(loaded.timeout_fallbacks) == {"/tmp/b"}
+
+
+def test_add_repo_for_a_new_repo_gets_the_default_timeout():
+    cfg = config.AppConfig(
+        repos=[
+            RepoConfig(repo_path="/tmp/a", base_branches=["main"], merge_tree_timeout_seconds=75)
+        ]
+    )
+
+    updated = config.add_repo(cfg, "/tmp/new", ["main"])
+
+    by_path = {r.repo_path: r.merge_tree_timeout_seconds for r in updated.repos}
+    assert by_path == {"/tmp/a": 75, "/tmp/new": 20}
+
+
+def _write_raw(bbw_config_dir, repos):
+    bbw_config_dir.mkdir(parents=True, exist_ok=True)
+    (bbw_config_dir / config.CONFIG_FILENAME).write_text(json.dumps({"repos": repos}))
+
+
+@pytest.mark.parametrize("raw_value", [900, "300", 1.5, True])
+def test_invalid_timeout_survives_add_repo_save_round_trip(bbw_config_dir, raw_value):
+    _write_raw(
+        bbw_config_dir,
+        [
+            {
+                "repo_path": "/tmp/a",
+                "base_branches": ["main"],
+                "merge_tree_timeout_seconds": raw_value,
+            }
+        ],
+    )
+
+    loaded = config.load_config()
+    config.save_config(config.add_repo(loaded, "/tmp/b", ["main"]))
+
+    saved = json.loads((bbw_config_dir / config.CONFIG_FILENAME).read_text())
+    by_path = {r["repo_path"]: r for r in saved["repos"]}
+    assert by_path["/tmp/a"]["merge_tree_timeout_seconds"] == raw_value
+    assert "merge_tree_timeout_seconds" not in by_path["/tmp/b"]
+
+
+def test_invalid_timeout_survives_set_poll_interval_and_re_adding_same_repo(bbw_config_dir):
+    _write_raw(
+        bbw_config_dir,
+        [{"repo_path": "/tmp/a", "base_branches": ["main"], "merge_tree_timeout_seconds": 900}],
+    )
+
+    loaded = config.load_config()
+    updated = config.add_repo(config.set_poll_interval(loaded, 60), "/tmp/a", ["develop"])
+    config.save_config(updated)
+
+    saved = json.loads((bbw_config_dir / config.CONFIG_FILENAME).read_text())
+    assert saved["repos"][0]["merge_tree_timeout_seconds"] == 900
+    assert saved["repos"][0]["base_branches"] == ["develop"]
+
+
+def test_remove_repo_drops_its_raw_timeout_but_keeps_others(bbw_config_dir):
+    _write_raw(
+        bbw_config_dir,
+        [
+            {"repo_path": "/tmp/a", "base_branches": ["main"], "merge_tree_timeout_seconds": 900},
+            {"repo_path": "/tmp/b", "base_branches": ["main"], "merge_tree_timeout_seconds": "x"},
+        ],
+    )
+
+    updated = config.remove_repo(config.load_config(), "/tmp/a")
+    config.save_config(updated)
+
+    saved = json.loads((bbw_config_dir / config.CONFIG_FILENAME).read_text())
+    assert [(r["repo_path"], r["merge_tree_timeout_seconds"]) for r in saved["repos"]] == [
+        ("/tmp/b", "x")
+    ]
+
+
+def test_explicit_timeout_edit_replaces_the_preserved_raw_value(bbw_config_dir):
+    _write_raw(
+        bbw_config_dir,
+        [{"repo_path": "/tmp/a", "base_branches": ["main"], "merge_tree_timeout_seconds": 900}],
+    )
+    loaded = config.load_config()
+    edited = config.AppConfig(
+        repos=[
+            RepoConfig(repo_path="/tmp/a", base_branches=["main"], merge_tree_timeout_seconds=45)
+        ],
+        timeout_fallbacks=loaded.timeout_fallbacks,
+    )
+
+    config.save_config(edited)
+
+    saved = json.loads((bbw_config_dir / config.CONFIG_FILENAME).read_text())
+    assert saved["repos"][0]["merge_tree_timeout_seconds"] == 45
+
+
+def test_load_skips_entry_with_unhashable_repo_path_instead_of_quarantining(bbw_config_dir):
+    _write_raw(
+        bbw_config_dir,
+        [
+            {"repo_path": ["not", "a", "str"], "base_branches": ["main"]},
+            {"repo_path": "/tmp/ok", "base_branches": ["main"]},
+        ],
+    )
+
+    loaded = config.load_config()
+
+    assert [r.repo_path for r in loaded.repos] == ["/tmp/ok"]
+
+
+def _saved_repos(bbw_config_dir):
+    return json.loads((bbw_config_dir / config.CONFIG_FILENAME).read_text())["repos"]
+
+
+@pytest.mark.parametrize(
+    "skipped",
+    ["not-a-dict", {"base_branches": ["main"]}, {"repo_path": 7}, {"repo_path": ["x"]}],
+)
+def test_skipped_entry_survives_add_remove_and_interval_saves(bbw_config_dir, skipped):
+    _write_raw(bbw_config_dir, [skipped, {"repo_path": "/tmp/ok", "base_branches": ["main"]}])
+
+    loaded = config.load_config()
+    assert loaded.skipped_entries == [skipped]
+    for edited in (
+        config.add_repo(loaded, "/tmp/b", ["main"]),
+        config.remove_repo(loaded, "/tmp/ok"),
+        config.set_poll_interval(loaded, 60),
+    ):
+        config.save_config(edited)
+        assert skipped in _saved_repos(bbw_config_dir)
+
+
+def test_skip_is_reported_with_the_existing_log_pattern(bbw_config_dir):
+    from base_branch_watch.core import log
+
+    _write_raw(bbw_config_dir, ["not-a-dict"])
+
+    config.load_config(quarantine=True)
+
+    assert "config: skipping non-object repo entry 'not-a-dict'" in log.log_path().read_text()
+
+
+def test_duplicate_repo_path_first_wins_and_duplicate_is_kept_untouched(bbw_config_dir):
+    first = {"repo_path": "/tmp/a", "base_branches": ["main"], "merge_tree_timeout_seconds": 900}
+    dup = {"repo_path": "/tmp/a", "base_branches": ["dev"], "merge_tree_timeout_seconds": 30}
+    _write_raw(bbw_config_dir, [first, dup])
+
+    loaded = config.load_config()
+
+    assert [r.base_branches for r in loaded.repos] == [["main"]]
+    assert loaded.timeout_fallbacks == {"/tmp/a": 900}  # not overwritten by the duplicate
+    config.save_config(config.set_poll_interval(loaded, 60))
+    assert _saved_repos(bbw_config_dir) == [first, dup]
+
+
+def test_removing_a_repo_also_drops_its_duplicate_so_it_does_not_reappear(bbw_config_dir):
+    entry = {"repo_path": "/tmp/a", "base_branches": ["main"]}
+    _write_raw(bbw_config_dir, [entry, dict(entry)])
+
+    config.save_config(config.remove_repo(config.load_config(), "/tmp/a"))
+
+    assert _saved_repos(bbw_config_dir) == []
+
+
+def test_unknown_keys_on_a_kept_entry_survive_a_save(bbw_config_dir):
+    _write_raw(bbw_config_dir, [{"repo_path": "/tmp/a", "base_branches": ["main"], "note": "hi"}])
+
+    config.save_config(config.add_repo(config.load_config(), "/tmp/b", ["main"]))
+
+    assert {r["repo_path"]: r.get("note") for r in _saved_repos(bbw_config_dir)} == {
+        "/tmp/a": "hi",
+        "/tmp/b": None,
+    }
+
+
+def test_fallback_log_line_truncates_a_huge_raw_value(bbw_config_dir):
+    from base_branch_watch.core import log
+
+    _write_raw(
+        bbw_config_dir,
+        [{"repo_path": "/tmp/a", "base_branches": [], "merge_tree_timeout_seconds": "x" * 5000}],
+    )
+
+    config.load_config(quarantine=True)
+
+    logged = log.log_path().read_text()
+    assert "x" * 90 in logged and "x" * 150 not in logged

@@ -182,6 +182,41 @@ def test_check_all_empty_repo_list_returns_empty_list_without_pool():
     mock_pool_cls.assert_not_called()
 
 
+def _remember_logged_timeout(repo_path: str, base: str = "main") -> None:
+    from base_branch_watch.core import base_verdict, git_ops
+
+    base_verdict._branch_status(
+        repo_path,
+        base_verdict.BaseVerdict(base=base, fetch_ok=True, merge_check=git_ops.TimedOut(7)),
+    )
+
+
+def test_check_all_prunes_log_once_memory_for_an_empty_repo_list(bbw_config_dir):
+    from base_branch_watch.core import base_verdict
+
+    _remember_logged_timeout("/removed")
+    assert base_verdict._logged_merge_checks
+
+    batch.check_all([])
+
+    assert not base_verdict._logged_merge_checks
+
+
+def test_check_all_prunes_log_once_memory_for_a_repo_removed_from_a_non_empty_list(bbw_config_dir):
+    from base_branch_watch.core import base_verdict
+
+    _remember_logged_timeout("/removed")
+    _remember_logged_timeout("/kept")
+    kept = RepoConfig(repo_path="/kept", base_branches=["main"])
+    with (
+        patch("base_branch_watch.runner.batch.base_verdict.check_repo", side_effect=_fake_status),
+        patch("base_branch_watch.runner.batch.pr_status.check_pr", side_effect=_fake_pr_status),
+    ):
+        batch.check_all([kept])
+
+    assert set(base_verdict._logged_merge_checks) == {("/kept", "main")}
+
+
 # -- Task 3 (Plan 02): pr_repo_paths gate (D-13's floor lives in menubar.py,
 # batch only mechanically honors the passed-in eligible set). --------------
 

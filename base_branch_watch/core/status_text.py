@@ -15,12 +15,13 @@ def base_summary(bs: BranchStatus, *, show_base: bool = True) -> str:
     base = f" ({bs.base})" if show_base else ""
     if bs.kind == StatusKind.CHECK_FAILED:
         return f"check failed - {bs.reason or 'unknown error'}{base}"
+    note = f" - {bs.reason}" if bs.reason else ""  # e.g. a timed-out conflict check
     if bs.kind == StatusKind.DIVERGED:
-        return f"diverged - {bs.behind} behind, {bs.ahead_of_base} ahead{base}"
+        return f"diverged - {bs.behind} behind, {bs.ahead_of_base} ahead{base}{note}"
     if bs.kind == StatusKind.CONFLICT_RISK:
-        return f"conflict risk - {len(bs.conflict_paths)} file(s) overlap{base}"
+        return f"conflict risk - {len(bs.conflict_paths)} file(s) overlap{base}{note}"
     if bs.kind == StatusKind.BEHIND:
-        return f"{bs.behind} behind{base}"
+        return f"{bs.behind} behind{base}{note}"
     return "up to date"
 
 

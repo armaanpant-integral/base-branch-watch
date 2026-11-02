@@ -81,6 +81,7 @@ def check_all(
     git check still runs normally). None (default) keeps every repo getting
     a check_pr call, unchanged from Plan 01.
     """
+    base_verdict.prune_logged_merge_checks(repos)
     if not repos:
         return [], {}
 

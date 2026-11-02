@@ -12,10 +12,13 @@ verdicts onto the menu's BranchStatus/RepoStatus.
 from __future__ import annotations
 
 import os
+import threading
 from dataclasses import dataclass, field
 
-from base_branch_watch.core import git_ops
+from base_branch_watch.core import git_ops, log
+from base_branch_watch.core.git_ops import Clean, Conflicted, MergeCheck, TimedOut, Undeterminable
 from base_branch_watch.core.models import (
+    DEFAULT_MERGE_TREE_TIMEOUT_SECONDS,
     BranchStatus,
     IncomingCommit,
     RepoConfig,
@@ -40,11 +43,9 @@ class BaseVerdict:
     """False when the local behind/ahead comparison itself errored."""
     behind: int = 0
     ahead: int = 0
-    merge_conflict: bool | None = None
-    """Committed work only: True/False from merge-tree, None = undeterminable
-    (fetch failed, comparison failed, unrelated histories, timeout)."""
-    conflict_paths: list[str] = field(default_factory=list)
-    """Paths merge-tree reports as conflicted (git's own order)."""
+    merge_check: MergeCheck = field(default_factory=Undeterminable)
+    """Committed work only: what merge-tree said. Undeterminable also covers
+    "never asked" (fetch failed, comparison failed); TimedOut is its own case."""
     working_tree_overlap: list[str] = field(default_factory=list)
     """Sorted incoming paths that also have uncommitted local edits."""
     path_overlap: list[str] = field(default_factory=list)
@@ -58,9 +59,30 @@ class BaseVerdict:
     incoming_commits: list[IncomingCommit] = field(default_factory=list)
     """Commits on origin/<base> not in local_ref (detailed only)."""
 
+    @property
+    def merge_conflict(self) -> bool | None:
+        """True/False from merge-tree, None = undeterminable (incl. timeout)."""
+        if isinstance(self.merge_check, Clean):
+            return False
+        if isinstance(self.merge_check, Conflicted):
+            return True
+        return None
+
+    @property
+    def conflict_paths(self) -> list[str]:
+        """Paths merge-tree reports as conflicted (git's own order)."""
+        if isinstance(self.merge_check, Conflicted):
+            return list(self.merge_check.paths)
+        return []
+
 
 def assess_base(
-    repo_path: str, base: str, local_ref: str = "HEAD", *, detailed: bool = False
+    repo_path: str,
+    base: str,
+    local_ref: str = "HEAD",
+    *,
+    detailed: bool = False,
+    merge_tree_timeout: int = DEFAULT_MERGE_TREE_TIMEOUT_SECONDS,
 ) -> BaseVerdict:
     """Fetch `base` (one retry) and assess `local_ref` against `origin/<base>`.
 
@@ -90,17 +112,12 @@ def assess_base(
             comparison_ok=False,
         )
 
-    merge_conflict: bool | None = False
-    conflict_paths: list[str] = []
+    merge_check: MergeCheck = Clean()
     # Only a branch with commits of its own can conflict on committed work.
     if not fetched:
-        merge_conflict = None  # stale origin ref proves nothing
+        merge_check = Undeterminable()  # stale origin ref proves nothing
     elif behind > 0 and ahead > 0:
-        dry_run = git_ops.merge_tree_dry_run(repo_path, local_ref, origin_ref)
-        if dry_run is None:
-            merge_conflict = None
-        else:
-            merge_conflict, conflict_paths = dry_run
+        merge_check = git_ops.merge_tree_check(repo_path, local_ref, origin_ref, merge_tree_timeout)
 
     working_tree_overlap: list[str] = []
     path_overlap: list[str] = []
@@ -113,7 +130,7 @@ def assess_base(
         incoming = git_ops.incoming_changed_paths(repo_path, mb, base) if mb else None
         # Branch-unique paths only matter for the push summary and as the
         # fallback when merge-tree could not decide.
-        need_branch_unique = detailed or merge_conflict is None
+        need_branch_unique = detailed or not isinstance(merge_check, Clean | Conflicted)
         branch_unique = (
             git_ops.branch_unique_paths(repo_path, mb, local_ref)
             if mb and need_branch_unique
@@ -142,14 +159,68 @@ def assess_base(
         head_sha=head_sha,
         behind=behind,
         ahead=ahead,
-        merge_conflict=merge_conflict,
-        conflict_paths=conflict_paths,
+        merge_check=merge_check,
         working_tree_overlap=working_tree_overlap,
         path_overlap=path_overlap,
         paths_determinable=paths_determinable,
         local_changes=local_changes,
         incoming_commits=commits,
     )
+
+
+_logged_merge_checks: dict[tuple[str, str], MergeCheck] = {}
+_logged_merge_checks_lock = threading.Lock()
+
+
+def _reset_logged_merge_checks() -> None:
+    with _logged_merge_checks_lock:
+        _logged_merge_checks.clear()
+
+
+def _forget_logged_merge_check(repo_path: str, base: str) -> None:
+    with _logged_merge_checks_lock:
+        _logged_merge_checks.pop((repo_path, base), None)
+
+
+def _forget_repo_logged_merge_checks(repo: RepoConfig) -> None:
+    """An unchecked repo has no merge-check state: a recurrence after it comes back is new."""
+    with _logged_merge_checks_lock:
+        for key in [key for key in _logged_merge_checks if key[0] == repo.repo_path]:
+            del _logged_merge_checks[key]
+
+
+def prune_logged_merge_checks(repos: list[RepoConfig]) -> None:
+    """Drop log-once memory for (repo, base) pairs no longer in the config, so a
+    removed repo or base does not leak an entry for the life of the app."""
+    live = {(repo.repo_path, base) for repo in repos for base in repo.base_branches}
+    with _logged_merge_checks_lock:
+        for key in [key for key in _logged_merge_checks if key not in live]:
+            del _logged_merge_checks[key]
+
+
+def _log_merge_check_once(repo_path: str, base: str, check: MergeCheck) -> None:
+    """WARN when merge-tree timed out or failed, once per state change per
+    (repo, base) rather than on every poll. A decisive answer resets the memory
+    so a later recurrence is logged again. Menu path only: the pre-push hook
+    shares assess_base and must not write the app log."""
+    key = (repo_path, base)
+    with _logged_merge_checks_lock:
+        if isinstance(check, TimedOut):
+            message = (
+                f"[WARN] merge-tree timed out after {check.seconds}s in {repo_path} "
+                f"(base {base}); raise merge_tree_timeout_seconds for this repo in config.json"
+            )
+        elif isinstance(check, Undeterminable) and check.cause:
+            message = f"[WARN] merge-tree could not check {repo_path} (base {base}): {check.cause}"
+        else:
+            # Clean/Conflicted are decisive; an Undeterminable with no cause carries
+            # nothing to log. Either way a later TimedOut is a recurrence: log it.
+            _logged_merge_checks.pop(key, None)
+            return
+        if _logged_merge_checks.get(key) == check:
+            return
+        _logged_merge_checks[key] = check
+    log.append(message)
 
 
 def _branch_status(repo_path: str, verdict: BaseVerdict) -> BranchStatus:
@@ -161,21 +232,32 @@ def _branch_status(repo_path: str, verdict: BaseVerdict) -> BranchStatus:
             base=base, behind=0, ahead_of_base=0, kind=StatusKind.CHECK_FAILED, reason=reason
         )
 
+    if not verdict.fetch_ok:
+        _forget_logged_merge_check(repo_path, base)
+        git_ops.log_fetch_failure(repo_path, base, verdict.fetch_error)
+        return failed(git_ops.fetch_failure_reason(verdict.fetch_error))
+    if not verdict.comparison_ok:
+        _forget_logged_merge_check(repo_path, base)
+        return failed(_REASON_STATUS_FAILED)
+
+    _log_merge_check_once(repo_path, base, verdict.merge_check)
+    # A timed-out check must stay visible whatever status the fallback picks.
+    note = (
+        git_ops.timed_out_text(verdict.merge_check.seconds)
+        if isinstance(verdict.merge_check, TimedOut)
+        else None
+    )
+
     def conflict_risk(paths: list[str]) -> BranchStatus:
         return BranchStatus(
             base=base,
             behind=verdict.behind,
             ahead_of_base=verdict.ahead,
             kind=StatusKind.CONFLICT_RISK,
+            reason=note,
             conflict_paths=paths,
             head_sha=verdict.head_sha,
         )
-
-    if not verdict.fetch_ok:
-        git_ops.log_fetch_failure(repo_path, base, verdict.fetch_error)
-        return failed(git_ops.fetch_failure_reason(verdict.fetch_error))
-    if not verdict.comparison_ok:
-        return failed(_REASON_STATUS_FAILED)
 
     if verdict.behind > 0:
         committed_conflict = verdict.merge_conflict is True
@@ -185,7 +267,7 @@ def _branch_status(repo_path: str, verdict: BaseVerdict) -> BranchStatus:
                 paths |= set(verdict.conflict_paths)
             return conflict_risk(sorted(paths))
         if not verdict.paths_determinable:
-            return failed(_REASON_CONFLICT_CHECK_FAILED)
+            return failed(note or _REASON_CONFLICT_CHECK_FAILED)
         # merge-tree undeterminable: fall back to the path-overlap heuristic.
         if verdict.merge_conflict is None and verdict.path_overlap:
             return conflict_risk(verdict.path_overlap)
@@ -201,6 +283,7 @@ def _branch_status(repo_path: str, verdict: BaseVerdict) -> BranchStatus:
         behind=verdict.behind,
         ahead_of_base=verdict.ahead,
         kind=kind,
+        reason=note,
         head_sha=verdict.head_sha,
     )
 
@@ -214,8 +297,10 @@ def check_repo(repo: RepoConfig) -> RepoStatus:
     failing the whole repo. Never raises.
     """
     if not os.path.isdir(os.path.join(repo.repo_path, ".git")):
+        _forget_repo_logged_merge_checks(repo)
         return RepoStatus.failed(repo, _REASON_REPO_MISSING)
     if not repo.base_branches:
+        _forget_repo_logged_merge_checks(repo)
         return RepoStatus.failed(repo, _REASON_NO_BASES)
 
     return RepoStatus(
@@ -224,7 +309,12 @@ def check_repo(repo: RepoConfig) -> RepoStatus:
         current_branch=git_ops.current_branch(repo.repo_path),
         unpushed=git_ops.unpushed_count(repo.repo_path),
         branch_statuses=[
-            _branch_status(repo.repo_path, assess_base(repo.repo_path, base))
+            _branch_status(
+                repo.repo_path,
+                assess_base(
+                    repo.repo_path, base, merge_tree_timeout=repo.merge_tree_timeout_seconds
+                ),
+            )
             for base in repo.base_branches
         ],
         failure_reason=None,

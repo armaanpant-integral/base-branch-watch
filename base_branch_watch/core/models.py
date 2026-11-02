@@ -67,12 +67,31 @@ _WORST_KIND_RANK = {
 }
 
 
+DEFAULT_MERGE_TREE_TIMEOUT_SECONDS = 20
+MAX_MERGE_TREE_TIMEOUT_SECONDS = 600
+
+
+def is_valid_merge_tree_timeout(value: object) -> bool:
+    """An int (not bool, str or float) in 1..MAX_MERGE_TREE_TIMEOUT_SECONDS.
+    The one rule shared by RepoConfig and the config.json parser."""
+    return type(value) is int and 1 <= value <= MAX_MERGE_TREE_TIMEOUT_SECONDS
+
+
 @dataclass
 class RepoConfig:
-    """A single watched repo: its filesystem path and base branch(es)."""
+    """A single watched repo: its filesystem path, base branch(es), and the
+    per-repo `git merge-tree` timeout (raise it for very large/rewritten bases)."""
 
     repo_path: str
     base_branches: list[str] = field(default_factory=list)
+    merge_tree_timeout_seconds: int = DEFAULT_MERGE_TREE_TIMEOUT_SECONDS
+
+    def __post_init__(self) -> None:
+        if not is_valid_merge_tree_timeout(self.merge_tree_timeout_seconds):
+            raise ValueError(
+                "merge_tree_timeout_seconds must be an int in "
+                f"1..{MAX_MERGE_TREE_TIMEOUT_SECONDS}, got {self.merge_tree_timeout_seconds!r}"
+            )
 
 
 @dataclass
@@ -86,7 +105,9 @@ class BranchStatus:
     reason: str | None = None
     """Set when `kind == CHECK_FAILED` (e.g. a per-base fetch failure) - the
     reason this specific base could not be checked, distinct from a repo-level
-    `RepoStatus.failure_reason` (missing repo dir, no base branches configured)."""
+    `RepoStatus.failure_reason` (missing repo dir, no base branches configured).
+    Also set, as a caveat, on a non-failed kind decided despite a timed-out
+    conflict check."""
     conflict_paths: list[str] = field(default_factory=list)
     """Set when `kind == CONFLICT_RISK` — sorted, deterministic list of file
     paths that overlap between local changes and the incoming base range."""

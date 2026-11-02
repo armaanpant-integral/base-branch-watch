@@ -15,6 +15,7 @@ from dataclasses import dataclass
 
 from base_branch_watch.core import log
 from base_branch_watch.core.models import (
+    DEFAULT_MERGE_TREE_TIMEOUT_SECONDS,
     IncomingCommit,
 )
 
@@ -313,9 +314,67 @@ def merge_base(repo_path: str, left: str, right: str, timeout: int = 10) -> str 
     return sha or None
 
 
-def merge_tree_dry_run(
-    repo_path: str, branch1: str, branch2: str, timeout: int = 20
-) -> tuple[bool, list[str]] | None:
+@dataclass(frozen=True)
+class Clean:
+    """merge-tree ran and the merge is clean."""
+
+
+@dataclass(frozen=True)
+class Conflicted:
+    """merge-tree ran and reports these paths as conflicted (git's own order)."""
+
+    paths: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class TimedOut:
+    """merge-tree hit its timeout after `seconds`."""
+
+    seconds: int
+
+
+@dataclass(frozen=True)
+class Undeterminable:
+    """merge-tree could not answer (git missing, unresolvable ref, nonzero exit).
+    `cause` is a short human-readable reason, empty when nothing is known."""
+
+    cause: str = ""
+
+
+MergeCheck = Clean | Conflicted | TimedOut | Undeterminable
+
+
+def timed_out_text(seconds: int) -> str:
+    """The one wording for a timed-out conflict check (menu reason and hook prompt)."""
+    return f"conflict check timed out after {seconds}s"
+
+
+_ANSI_ESCAPE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)?|.)")
+
+
+def printable_text(text: str, *, keep_newlines: bool = False) -> str:
+    """`text` without ANSI/OSC escape sequences and other control characters (CR, ESC,
+    NUL...), so git's stderr cannot redraw or forge terminal output shown to the user."""
+    kept = "\n" if keep_newlines else ""
+    without_escapes = _ANSI_ESCAPE.sub("", text)
+    return "".join(ch for ch in without_escapes if ch.isprintable() or ch in kept)
+
+
+def _first_line(data: bytes | str | None) -> str:
+    if isinstance(data, bytes):
+        data = data.decode("utf-8", "replace")
+    for line in printable_text(data or "", keep_newlines=True).splitlines():
+        if line.strip():
+            return line.strip()[:200]
+    return ""
+
+
+def merge_tree_check(
+    repo_path: str,
+    branch1: str,
+    branch2: str,
+    timeout: int = DEFAULT_MERGE_TREE_TIMEOUT_SECONDS,
+) -> MergeCheck:
     """`git merge-tree --write-tree --name-only -z -- branch1 branch2` dry run.
 
     Authoritative, non-mutating conflict check (git >= 2.38) -- writes an
@@ -330,26 +389,33 @@ def merge_tree_dry_run(
     2, empirically reproduced as a live silent-bypass PoC this session).
 
     Exit-status semantics (03-RESEARCH.md Pattern 2 / Pitfall 3b):
-    - returncode == 0                        -> clean merge -> (False, [])
-    - returncode == 1 AND non-empty stdout    -> real conflict -> (True, paths)
+    - returncode == 0                        -> Clean
+    - returncode == 1 AND non-empty stdout    -> Conflicted(paths)
     - returncode == 1 AND EMPTY stdout        -> an unresolvable ref (e.g. a
       typo'd base, or origin/<base> not yet fetched) -- NOT a conflict, and
       must never be parsed as one.
     - any other returncode                    -> a genuine error.
-    The last two cases both collapse to None, the same "couldn't determine"
-    sentinel used everywhere else in this file -- never confuse either with
-    a real conflict or a clean result.
+    The last two cases are Undeterminable (with the first stderr line as the
+    cause); a subprocess timeout is TimedOut, so callers can say "timed out"
+    instead of "local git error". Never confuse any of them with a real
+    conflict or a clean result.
+
+    No logging here: the pre-push hook shares this path and must not write to
+    the app dir. The poller logs the cause in base_verdict.
     """
-    result = _try_git(
-        repo_path,
-        ["merge-tree", "--write-tree", "--name-only", "-z", "--", branch1, branch2],
-        timeout,
-        text=False,
-    )
-    if result is None:
-        return None
+    try:
+        result = _run_git(
+            repo_path,
+            ["merge-tree", "--write-tree", "--name-only", "-z", "--", branch1, branch2],
+            timeout,
+            text=False,
+        )
+    except subprocess.TimeoutExpired:
+        return TimedOut(seconds=timeout)
+    except OSError as exc:
+        return Undeterminable(cause=str(exc)[:200])
     if result.returncode == 0:
-        return (False, [])
+        return Clean()
     if result.returncode == 1 and result.stdout:
         parts = result.stdout.split(b"\x00")
         conflicted: list[str] = []
@@ -357,8 +423,10 @@ def merge_tree_dry_run(
             if part == b"":
                 break  # first empty part terminates the conflicted-path list
             conflicted.append(part.decode("utf-8", "surrogateescape"))
-        return (True, conflicted)
-    return None  # any other code, OR returncode==1 with empty stdout (unresolvable ref)
+        return Conflicted(paths=tuple(conflicted))
+    # any other code, OR returncode==1 with empty stdout (unresolvable ref)
+    cause = _first_line(result.stderr) or f"git merge-tree exited {result.returncode}"
+    return Undeterminable(cause=cause)
 
 
 def hooks_path(repo_path: str, timeout: int = 10) -> str | None:

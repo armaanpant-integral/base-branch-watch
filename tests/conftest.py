@@ -368,3 +368,45 @@ def fixture_repos_fetch_fails(tmp_path, default_branch_name):
     _run(["remote", "set-url", "origin", str(missing_remote)], clone_dir)
 
     return str(origin_dir), str(clone_dir)
+
+
+@pytest.fixture(autouse=True)
+def _fresh_merge_check_log_memory():
+    """The once-per-state-change merge-tree WARN memory is process-wide; reset it per test."""
+    from base_branch_watch.core import base_verdict
+
+    base_verdict._reset_logged_merge_checks()
+    yield
+    base_verdict._reset_logged_merge_checks()
+
+
+@pytest.fixture()
+def merge_tree_stub(monkeypatch):
+    """Replace only the `git merge-tree` call (every other git call runs for real).
+
+    `merge_tree_stub(behavior)` where behavior(args, timeout) returns a
+    CompletedProcess or raises (e.g. subprocess.TimeoutExpired). Returns the list of
+    timeouts merge-tree was invoked with.
+    """
+    from base_branch_watch.core import git_ops
+
+    real_run_git = git_ops._run_git
+
+    def install(behavior) -> list[int]:
+        timeouts: list[int] = []
+
+        def fake(repo_path, args, timeout, **kwargs):
+            if args[0] == "merge-tree":
+                timeouts.append(timeout)
+                return behavior(args, timeout)
+            return real_run_git(repo_path, args, timeout, **kwargs)
+
+        monkeypatch.setattr(git_ops, "_run_git", fake)
+        return timeouts
+
+    return install
+
+
+def raise_timeout(args, timeout):
+    """merge_tree_stub behavior: the subprocess hit its timeout."""
+    raise subprocess.TimeoutExpired(cmd=args, timeout=timeout)
