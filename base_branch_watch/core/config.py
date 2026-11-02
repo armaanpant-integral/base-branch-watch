@@ -6,7 +6,7 @@ config_dir()); this module owns what the config means.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 
 from base_branch_watch.core import log, store
@@ -30,10 +30,11 @@ CONFIG_FILENAME = "config.json"
 class AppConfig:
     poll_interval_seconds: int = DEFAULT_POLL_INTERVAL_SECONDS
     repos: list[RepoConfig] = field(default_factory=list)
-    timeout_fallbacks: frozenset[str] = frozenset()
-    """repo_paths whose configured merge_tree_timeout_seconds was invalid and replaced by
-    the default at load time (not persisted), so a read-only caller like the pre-push
-    hook can say so instead of silently using the default."""
+    timeout_fallbacks: Mapping[str, object] = field(default_factory=dict)
+    """repo_path -> the raw, invalid merge_tree_timeout_seconds the user wrote, for repos
+    whose value was replaced by the default at load time. A read-only caller like the
+    pre-push hook uses it to say so; save_config writes the raw value back unchanged so a
+    save never erases the user's text (only an explicit edit to the repo's timeout does)."""
 
 
 def _parse_merge_tree_timeout(repo_path: str, entry: dict, report: Callable[[str], None]) -> int:
@@ -63,34 +64,36 @@ def load_config(*, quarantine: bool = False) -> AppConfig:
     if raw is None:
         return AppConfig()
 
-    fallbacks: set[str] = set()
-
-    def note_fallback(message: str, repo_path: str) -> None:
-        fallbacks.add(repo_path)
-        report(message)
+    fallbacks: dict[str, object] = {}
 
     try:
-        repos = [
-            RepoConfig(
-                repo_path=r["repo_path"],
-                base_branches=list(r.get("base_branches", [])),
-                merge_tree_timeout_seconds=_parse_merge_tree_timeout(
-                    r["repo_path"],
-                    r,
-                    lambda message, path=r["repo_path"]: note_fallback(message, path),
-                ),
+        repos = []
+        for entry in raw.get("repos", []):
+            if not isinstance(entry, dict):
+                continue
+            repo_path = entry.get("repo_path")
+            if not isinstance(repo_path, str):  # also guards unhashable paths
+                continue
+
+            def note_fallback(message: str, path: str = repo_path, entry: dict = entry) -> None:
+                fallbacks[path] = entry["merge_tree_timeout_seconds"]
+                report(message)
+
+            repos.append(
+                RepoConfig(
+                    repo_path=repo_path,
+                    base_branches=list(entry.get("base_branches", [])),
+                    merge_tree_timeout_seconds=_parse_merge_tree_timeout(
+                        repo_path, entry, note_fallback
+                    ),
+                )
             )
-            for r in raw.get("repos", [])
-            if isinstance(r, dict) and "repo_path" in r
-        ]
         poll_interval = raw.get("poll_interval_seconds", DEFAULT_POLL_INTERVAL_SECONDS)
-    except (AttributeError, TypeError, KeyError):
+    except (AttributeError, TypeError, KeyError, ValueError):
         if quarantine:
             store.quarantine_file(CONFIG_FILENAME, "unexpected shape", report=report)
         return AppConfig()
-    return AppConfig(
-        poll_interval_seconds=poll_interval, repos=repos, timeout_fallbacks=frozenset(fallbacks)
-    )
+    return AppConfig(poll_interval_seconds=poll_interval, repos=repos, timeout_fallbacks=fallbacks)
 
 
 def parse_base_branches(raw: str) -> list[str]:
@@ -122,7 +125,11 @@ def add_repo(cfg: AppConfig, repo_path: str, base_branches: list[str]) -> AppCon
             merge_tree_timeout_seconds=timeout,
         )
     )
-    return AppConfig(poll_interval_seconds=cfg.poll_interval_seconds, repos=remaining)
+    return AppConfig(
+        poll_interval_seconds=cfg.poll_interval_seconds,
+        repos=remaining,
+        timeout_fallbacks=dict(cfg.timeout_fallbacks),
+    )
 
 
 def remove_repo(cfg: AppConfig, repo_path: str) -> AppConfig:
@@ -131,7 +138,12 @@ def remove_repo(cfg: AppConfig, repo_path: str) -> AppConfig:
     Pure — does not perform I/O. Callers persist the result via save_config.
     """
     remaining = [r for r in cfg.repos if r.repo_path != repo_path]
-    return AppConfig(poll_interval_seconds=cfg.poll_interval_seconds, repos=remaining)
+    fallbacks = {p: v for p, v in cfg.timeout_fallbacks.items() if p != repo_path}
+    return AppConfig(
+        poll_interval_seconds=cfg.poll_interval_seconds,
+        repos=remaining,
+        timeout_fallbacks=fallbacks,
+    )
 
 
 def set_poll_interval(cfg: AppConfig, seconds: int | str) -> AppConfig:
@@ -144,13 +156,20 @@ def set_poll_interval(cfg: AppConfig, seconds: int | str) -> AppConfig:
     """
     value = int(seconds)
     clamped = max(value, MIN_POLL_INTERVAL_SECONDS)
-    return AppConfig(poll_interval_seconds=clamped, repos=list(cfg.repos))
+    return AppConfig(
+        poll_interval_seconds=clamped,
+        repos=list(cfg.repos),
+        timeout_fallbacks=dict(cfg.timeout_fallbacks),
+    )
 
 
-def _repo_payload(repo: RepoConfig) -> dict:
+def _repo_payload(repo: RepoConfig, fallbacks: Mapping[str, object]) -> dict:
     entry: dict = {"repo_path": repo.repo_path, "base_branches": list(repo.base_branches)}
     if repo.merge_tree_timeout_seconds != DEFAULT_MERGE_TREE_TIMEOUT_SECONDS:
         entry["merge_tree_timeout_seconds"] = repo.merge_tree_timeout_seconds
+    elif repo.repo_path in fallbacks:
+        # Invalid on load and not explicitly edited since: keep the user's raw text.
+        entry["merge_tree_timeout_seconds"] = fallbacks[repo.repo_path]
     return entry
 
 
@@ -158,6 +177,6 @@ def save_config(cfg: AppConfig) -> WriteResult:
     """Atomically persist AppConfig. Never raises; the result says whether it was saved."""
     payload = {
         "poll_interval_seconds": cfg.poll_interval_seconds,
-        "repos": [_repo_payload(r) for r in cfg.repos],
+        "repos": [_repo_payload(r, cfg.timeout_fallbacks) for r in cfg.repos],
     }
     return store.write_object(CONFIG_FILENAME, payload, report=log.append)
