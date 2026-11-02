@@ -791,3 +791,16 @@ def test_merge_tree_check_reports_conflict_paths(
 
 def test_timed_out_text_is_the_one_wording():
     assert git_ops.timed_out_text(7) == "conflict check timed out after 7s"
+
+
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        ("fatal: \x1b[31mbad\x1b[0m object\r\n", "fatal: bad object"),
+        ("\x1b]0;forged title\x07fatal: x", "fatal: x"),
+        (b"\x00\x07fatal: nul\x1b[2K\rreplaced", "fatal: nulreplaced"),
+        ("\r\n\x1b[31m\n  real line\n", "real line"),
+    ],
+)
+def test_first_line_strips_escape_sequences_and_control_characters(raw, expected):
+    assert git_ops._first_line(raw) == expected

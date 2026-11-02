@@ -34,6 +34,7 @@ def prompt_push_anyway(message: str) -> bool:
     """
     if os.environ.get("BBWATCH_SKIP_GATE") == "1":
         return True
+    message = git_ops.printable_text(message, keep_newlines=True)
     try:
         with open("/dev/tty") as tty:
             print(f"{message}\nPush anyway? [y/N] ", end="", flush=True)

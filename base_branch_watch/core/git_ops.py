@@ -349,10 +349,21 @@ def timed_out_text(seconds: int) -> str:
     return f"conflict check timed out after {seconds}s"
 
 
+_ANSI_ESCAPE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)?|.)")
+
+
+def printable_text(text: str, *, keep_newlines: bool = False) -> str:
+    """`text` without ANSI/OSC escape sequences and other control characters (CR, ESC,
+    NUL...), so git's stderr cannot redraw or forge terminal output shown to the user."""
+    kept = "\n" if keep_newlines else ""
+    without_escapes = _ANSI_ESCAPE.sub("", text)
+    return "".join(ch for ch in without_escapes if ch.isprintable() or ch in kept)
+
+
 def _first_line(data: bytes | str | None) -> str:
     if isinstance(data, bytes):
         data = data.decode("utf-8", "replace")
-    for line in (data or "").splitlines():
+    for line in printable_text(data or "", keep_newlines=True).splitlines():
         if line.strip():
             return line.strip()[:200]
     return ""

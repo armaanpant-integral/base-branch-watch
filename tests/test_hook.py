@@ -417,3 +417,20 @@ def test_hook_mentions_the_fallback_when_the_configured_timeout_is_invalid(
     assert "timed out after 20s" in err
     assert "merge_tree_timeout_seconds in config.json is invalid" in err
     assert not (bbw_config_dir / "base-branch-watch.log").exists()
+
+
+def test_prompt_strips_control_characters_from_the_message(monkeypatch, capsys, tmp_path):
+    tty = tmp_path / "tty"
+    tty.write_text("n\n")
+    real_open = open
+    monkeypatch.delenv("BBWATCH_SKIP_GATE", raising=False)
+    monkeypatch.setattr(
+        "builtins.open",
+        lambda path, *a, **k: real_open(tty if path == "/dev/tty" else path, *a, **k),
+    )
+
+    assert hook.prompt_push_anyway("bad \x1b[31mred\x1b[0m\roverwrite\nsecond line") is False
+
+    out = capsys.readouterr().out
+    assert "\x1b" not in out and "\r" not in out
+    assert "bad redoverwrite\nsecond line" in out
