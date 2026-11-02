@@ -299,3 +299,87 @@ def test_add_repo_preserves_the_existing_entrys_timeout():
 
     assert updated.repos[0].base_branches == ["main", "develop"]
     assert updated.repos[0].merge_tree_timeout_seconds == 75
+
+
+@pytest.mark.parametrize("edge", [1, 600])
+def test_merge_tree_timeout_boundaries_are_accepted(bbw_config_dir, edge):
+    _write_raw_config(
+        {"repo_path": "/tmp/r", "base_branches": ["main"], "merge_tree_timeout_seconds": edge}
+    )
+
+    assert config.load_config().repos[0].merge_tree_timeout_seconds == edge
+
+
+def test_repo_config_rejects_an_out_of_range_timeout():
+    for bad in (0, 601, True, "20", 1.5):
+        with pytest.raises(ValueError, match="merge_tree_timeout_seconds"):
+            RepoConfig(repo_path="/tmp/r", merge_tree_timeout_seconds=bad)  # type: ignore[arg-type]
+    assert (
+        RepoConfig(repo_path="/tmp/r", merge_tree_timeout_seconds=600).merge_tree_timeout_seconds
+        == 600
+    )
+
+
+def test_non_dict_repo_entry_is_skipped_and_the_rest_survive(bbw_config_dir):
+    (config.config_dir()).mkdir(parents=True, exist_ok=True)
+    (config.config_dir() / config.CONFIG_FILENAME).write_text(
+        json.dumps(
+            {
+                "repos": [
+                    "not-a-dict",
+                    {"repo_path": "/tmp/ok", "base_branches": ["main"]},
+                ]
+            }
+        )
+    )
+
+    assert [r.repo_path for r in config.load_config().repos] == ["/tmp/ok"]
+
+
+def test_a_bad_timeout_on_one_repo_leaves_the_others_intact(bbw_config_dir):
+    (config.config_dir()).mkdir(parents=True, exist_ok=True)
+    (config.config_dir() / config.CONFIG_FILENAME).write_text(
+        json.dumps(
+            {
+                "repos": [
+                    {
+                        "repo_path": "/tmp/a",
+                        "base_branches": ["main"],
+                        "merge_tree_timeout_seconds": 90,
+                    },
+                    {
+                        "repo_path": "/tmp/b",
+                        "base_branches": ["main"],
+                        "merge_tree_timeout_seconds": 0,
+                    },
+                    {
+                        "repo_path": "/tmp/c",
+                        "base_branches": ["dev"],
+                        "merge_tree_timeout_seconds": 45,
+                    },
+                ]
+            }
+        )
+    )
+
+    loaded = config.load_config()
+
+    assert [(r.repo_path, r.merge_tree_timeout_seconds) for r in loaded.repos] == [
+        ("/tmp/a", 90),
+        ("/tmp/b", 20),
+        ("/tmp/c", 45),
+    ]
+    assert loaded.timeout_fallbacks == frozenset({"/tmp/b"})
+
+
+def test_add_repo_for_a_new_repo_gets_the_default_timeout():
+    cfg = config.AppConfig(
+        repos=[
+            RepoConfig(repo_path="/tmp/a", base_branches=["main"], merge_tree_timeout_seconds=75)
+        ]
+    )
+
+    updated = config.add_repo(cfg, "/tmp/new", ["main"])
+
+    by_path = {r.repo_path: r.merge_tree_timeout_seconds for r in updated.repos}
+    assert by_path == {"/tmp/a": 75, "/tmp/new": 20}
