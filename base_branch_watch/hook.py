@@ -18,7 +18,7 @@ import os
 import sys
 
 from base_branch_watch.core import base_verdict, config, git_ops, hook_summary
-from base_branch_watch.core.git_ops import TimedOut
+from base_branch_watch.core.git_ops import TimedOut, Undeterminable
 from base_branch_watch.core.models import DEFAULT_MERGE_TREE_TIMEOUT_SECONDS, IncomingCommit
 
 
@@ -82,6 +82,7 @@ def main(argv: list[str] | None = None) -> int:
     real_conflict = False
     longest_timeout: int | None = None  # largest TimedOut across bases
     fetch_or_other_failure = False
+    failure_causes: list[str] = []  # distinct merge-tree causes, in first-seen order
 
     for local_ref, local_sha, _remote_ref, _remote_sha in updates:
         if git_ops.is_delete(local_ref, local_sha):
@@ -107,6 +108,13 @@ def main(argv: list[str] | None = None) -> int:
                 gating = True
                 if not isinstance(verdict.merge_check, TimedOut):
                     fetch_or_other_failure = True
+                    check = verdict.merge_check
+                    if (
+                        isinstance(check, Undeterminable)
+                        and check.cause
+                        and check.cause not in failure_causes
+                    ):
+                        failure_causes.append(check.cause)
             elif verdict.merge_conflict:
                 gating = True
                 real_conflict = True
@@ -128,7 +136,10 @@ def main(argv: list[str] | None = None) -> int:
             "merge_tree_timeout_seconds for this repo in config.json)."
         )
     if fetch_or_other_failure:
-        parts.append("Could not determine whether the base branch conflicts (fetch/network issue).")
+        detail = f": {'; '.join(failure_causes)}" if failure_causes else ""
+        parts.append(
+            f"Could not determine whether the base branch conflicts (fetch/git error{detail})."
+        )
     message = " ".join(parts)
     if not real_conflict:
         message = message.rstrip(".") + " -- gating to be safe."

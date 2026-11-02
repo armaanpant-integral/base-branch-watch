@@ -262,7 +262,7 @@ def test_hook_timed_out_merge_tree_gates_and_prompt_names_the_timeout(
     assert seen_timeouts == [9]
     err = capsys.readouterr().err
     assert "timed out after 9s" in err
-    assert "fetch/network issue" not in err
+    assert "fetch/git error" not in err
 
 
 def test_hook_real_conflict_still_says_potential_conflicts_when_another_base_timed_out(
@@ -301,7 +301,7 @@ def test_hook_one_base_timed_out_and_one_clean_reports_the_timeout(
 
     assert "timed out after 9s" in prompts[0]
     assert "Potential conflicts" not in prompts[0]
-    assert "fetch/network issue" not in prompts[0]
+    assert "fetch/git error" not in prompts[0]
 
 
 def test_hook_timeout_does_not_hide_a_fetch_failure_on_another_base(
@@ -330,7 +330,27 @@ def test_hook_timeout_does_not_hide_a_fetch_failure_on_another_base(
     assert _run_hook(clone_path, default_branch_name, monkeypatch) == 1
 
     assert "timed out after 9s" in prompts[0]
-    assert "fetch/network issue" in prompts[0]
+    assert "fetch/git error" in prompts[0]
+
+
+def test_hook_undeterminable_merge_tree_says_git_error_and_includes_the_cause(
+    fixture_repos_conflict_overlap,
+    default_branch_name,
+    bbw_config_dir,
+    monkeypatch,
+    merge_tree_stub,
+):
+    _origin, clone_path = fixture_repos_conflict_overlap
+    _configure(clone_path, [default_branch_name])
+    failure = subprocess.CompletedProcess([], 128, b"", b"fatal: simulated merge-tree breakage\n")
+    merge_tree_stub(_per_base_merge_tree({f"origin/{default_branch_name}": failure}))
+    prompts = _capture_prompts(monkeypatch)
+
+    assert _run_hook(clone_path, default_branch_name, monkeypatch) == 1
+
+    assert "fetch/git error" in prompts[0]
+    assert "fatal: simulated merge-tree breakage" in prompts[0]
+    assert "network" not in prompts[0]
 
 
 class _FakeTty(io.StringIO):
