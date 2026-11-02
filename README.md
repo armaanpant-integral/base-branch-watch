@@ -138,7 +138,7 @@ Watched repos live in `~/Library/Application Support/base-branch-watch/config.js
 ```
 
 - `merge_tree_timeout_seconds` (optional, whole number 1-600, default 20) - how long the conflict check (`git merge-tree`) may run per base branch. Raise it for repos with very large or rewritten base branches. Invalid values (text, decimals, true/false, zero, negatives, above 600) fall back to 20 and are noted in the app log.
-- When the check runs out of time the push prompt (and the menu, when the path-overlap fallback can't decide either) says "conflict check timed out after Ns"; "conflict check failed - local git error" means git itself failed (bad ref, no common ancestor, nonzero exit), which a longer timeout will not fix.
+- When the check runs out of time the menu always says so: the row reads "conflict check timed out after Ns" when nothing else can decide, or keeps its conflict-risk/diverged/behind status with "- conflict check timed out after Ns" appended; the app log gets one `[WARN]` per change. The push prompt says it too, and an invalid value in config.json is called out there. "conflict check failed - local git error" means git itself failed (bad ref, no common ancestor, nonzero exit - the log has the cause), which a longer timeout will not fix.
 
 ## Known Issues
 
