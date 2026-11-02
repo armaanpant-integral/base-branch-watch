@@ -366,3 +366,34 @@ def test_logged_merge_checks_are_pruned_for_repos_and_bases_no_longer_configured
     base_verdict.prune_logged_merge_checks([RepoConfig(repo_path="/keep", base_branches=["main"])])
 
     assert set(base_verdict._logged_merge_checks) == {("/keep", "main")}
+
+
+def test_timeout_is_logged_again_after_the_repo_dir_went_missing_and_came_back(
+    fixture_repos_diverged, default_branch_name, bbw_config_dir, merge_tree_stub, monkeypatch
+):
+    _origin, clone_path = fixture_repos_diverged
+    merge_tree_stub(raise_timeout)
+    repo = _repo(clone_path, default_branch_name)
+
+    base_verdict.check_repo(repo)
+    with monkeypatch.context() as scoped:
+        scoped.setattr(base_verdict.os.path, "isdir", lambda _path: False)
+        missing = base_verdict.check_repo(repo)
+    base_verdict.check_repo(repo)
+
+    assert missing.failure_reason == base_verdict._REASON_REPO_MISSING
+    assert log.log_path().read_text().count("[WARN] merge-tree timed out") == 2
+
+
+def test_no_bases_early_exit_forgets_logged_checks_for_the_repo(bbw_config_dir, tmp_path):
+    (tmp_path / ".git").mkdir()
+    base_verdict._branch_status(
+        str(tmp_path),
+        base_verdict.BaseVerdict(base="main", fetch_ok=True, merge_check=git_ops.TimedOut(7)),
+    )
+    assert base_verdict._logged_merge_checks
+
+    status = base_verdict.check_repo(RepoConfig(repo_path=str(tmp_path), base_branches=[]))
+
+    assert status.failure_reason == base_verdict._REASON_NO_BASES
+    assert not base_verdict._logged_merge_checks

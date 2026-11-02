@@ -182,6 +182,13 @@ def _forget_logged_merge_check(repo_path: str, base: str) -> None:
         _logged_merge_checks.pop((repo_path, base), None)
 
 
+def _forget_repo_logged_merge_checks(repo: RepoConfig) -> None:
+    """An unchecked repo has no merge-check state: a recurrence after it comes back is new."""
+    with _logged_merge_checks_lock:
+        for key in [key for key in _logged_merge_checks if key[0] == repo.repo_path]:
+            del _logged_merge_checks[key]
+
+
 def prune_logged_merge_checks(repos: list[RepoConfig]) -> None:
     """Drop log-once memory for (repo, base) pairs no longer in the config, so a
     removed repo or base does not leak an entry for the life of the app."""
@@ -290,8 +297,10 @@ def check_repo(repo: RepoConfig) -> RepoStatus:
     failing the whole repo. Never raises.
     """
     if not os.path.isdir(os.path.join(repo.repo_path, ".git")):
+        _forget_repo_logged_merge_checks(repo)
         return RepoStatus.failed(repo, _REASON_REPO_MISSING)
     if not repo.base_branches:
+        _forget_repo_logged_merge_checks(repo)
         return RepoStatus.failed(repo, _REASON_NO_BASES)
 
     return RepoStatus(
