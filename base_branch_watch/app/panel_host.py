@@ -33,6 +33,8 @@ class PanelHost:
         on_stale_click: Callable[[str], None],
         on_refresh: Callable[[], None],
         on_add_repo: Callable[[], None],
+        on_edit_base: Callable[[str], None],
+        on_remove_repo: Callable[[str], None],
     ) -> None:
         self._status_item = status_item
         self._menu: NSMenu = status_item.menu()
@@ -44,6 +46,8 @@ class PanelHost:
             on_stale_click=lambda path: self._close_then(on_stale_click, path),
             on_refresh=on_refresh,
             on_add_repo=lambda: self._close_then(on_add_repo),
+            on_edit_base=lambda path: self._close_then(on_edit_base, path),
+            on_remove_repo=lambda path: self._close_then(on_remove_repo, path),
         )
         self._target = ActionTarget.alloc().initWithCallbacks_([self._on_status_click])
 

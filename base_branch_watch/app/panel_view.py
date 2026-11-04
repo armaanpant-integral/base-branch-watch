@@ -19,6 +19,7 @@ from AppKit import (
     NSFont,
     NSFontAttributeName,
     NSForegroundColorAttributeName,
+    NSImage,
     NSMakeRect,
     NSMutableAttributedString,
     NSPopover,
@@ -53,6 +54,8 @@ MAX_CONTENT_HEIGHT = 470
 CONTENT_WIDTH = PANEL_WIDTH - 2 * PADDING
 TILE_WIDTH = (CONTENT_WIDTH - GAP) // 2
 TILE_PADDING = 14
+TILE_ACTION_SIZE = 22
+TILE_ACTION_INSET = TILE_PADDING // 2
 STALE_TILE_HEIGHT = 150
 STALE_PREVIEW_ROWS = 3
 TAB_TITLES = ("Repos", "PRs", "Stale")
@@ -180,7 +183,7 @@ def _arrows(behind, unpushed):
     return text
 
 
-def _tile_view(tile: RepoTile, tag: int, target) -> NSView:
+def _tile_view(tile: RepoTile, tag: int, edit_tag: int, remove_tag: int, target) -> NSView:
     alert = tile.severity != Severity.OK
     border = NSColor.systemOrangeColor() if alert else NSColor.separatorColor()
     root = _FlippedView.alloc().initWithFrame_(NSMakeRect(0, 0, TILE_WIDTH, TILE_HEIGHT))
@@ -193,7 +196,13 @@ def _tile_view(tile: RepoTile, tag: int, target) -> NSView:
     text_x = TILE_PADDING + 18
     _place(_dot(tile.severity), inner, TILE_PADDING, 19, 10, 10)
     name = _label(tile.name, 16, _FONT_SEMIBOLD)
-    _place(name, inner, text_x, 14, TILE_WIDTH - text_x - TILE_PADDING, 21)
+    # Right-to-left: remove, then edit. The name leaves room for however many there are.
+    actions = (
+        ("xmark", "✕", "Remove repo", remove_tag),
+        ("pencil", "✎", "Edit base branch", edit_tag),
+    )
+    name_width = TILE_WIDTH - text_x - len(actions) * TILE_ACTION_SIZE - TILE_PADDING
+    _place(name, inner, text_x, 14, name_width, 21)
     base = _label(tile.base or " ", 12.5, color=NSColor.secondaryLabelColor(), mono=True)
     _place(base, inner, text_x, 38, TILE_WIDTH - text_x - TILE_PADDING, 17)
 
@@ -217,7 +226,30 @@ def _tile_view(tile: RepoTile, tag: int, target) -> NSView:
     click.setTarget_(target)
     click.setAction_("fire:")
     _place(click, inner, 0, 0, TILE_WIDTH, TILE_HEIGHT)
+    # Added after the full-tile click so they sit above it and take their own clicks.
+    x = TILE_WIDTH - TILE_ACTION_INSET - TILE_ACTION_SIZE
+    for symbol, fallback_glyph, description, action_tag in actions:
+        button = _tile_action(symbol, fallback_glyph, description, action_tag, target)
+        _place(button, inner, x, TILE_ACTION_INSET, TILE_ACTION_SIZE, TILE_ACTION_SIZE)
+        x -= TILE_ACTION_SIZE
     return root
+
+
+def _tile_action(symbol: str, fallback_glyph: str, description: str, tag: int, target) -> NSButton:
+    """A small borderless icon button (SF Symbol, text glyph if the symbol is missing)."""
+    button = NSButton.alloc().init()
+    button.setBordered_(False)
+    image = NSImage.imageWithSystemSymbolName_accessibilityDescription_(symbol, description)
+    if image is not None:
+        button.setImage_(image)
+    else:
+        button.setTitle_(fallback_glyph)
+    button.setContentTintColor_(NSColor.secondaryLabelColor())
+    button.setToolTip_(description)
+    button.setTag_(tag)
+    button.setTarget_(target)
+    button.setAction_("fire:")
+    return button
 
 
 def _card(width, height, alert=False):
@@ -331,7 +363,11 @@ class DashboardPanel:
         on_stale_click: Callable[[str], None],
         on_refresh: Callable[[], None],
         on_add_repo: Callable[[], None],
+        on_edit_base: Callable[[str], None],
+        on_remove_repo: Callable[[str], None],
     ) -> None:
+        self._on_edit_base = on_edit_base
+        self._on_remove_repo = on_remove_repo
         self._on_repo_click = on_repo_click
         self._on_stale_click = on_stale_click
         self._on_refresh = on_refresh
@@ -405,9 +441,12 @@ class DashboardPanel:
         for index, tile in enumerate(model.tiles):
             repo_path = tile.repo_path
             tag = self._register(lambda _s, path=repo_path: self._on_repo_click(path))
+            edit_tag = self._register(lambda _s, path=repo_path: self._on_edit_base(path))
+            remove_tag = self._register(lambda _s, path=repo_path: self._on_remove_repo(path))
             x = (index % 2) * (TILE_WIDTH + GAP)
             y = (index // 2) * (TILE_HEIGHT + GAP)
-            _place(_tile_view(tile, tag, self._target), grid, x, y, TILE_WIDTH, TILE_HEIGHT)
+            tile_view = _tile_view(tile, tag, edit_tag, remove_tag, self._target)
+            _place(tile_view, grid, x, y, TILE_WIDTH, TILE_HEIGHT)
         return grid, height
 
     def _build_tile_grid(self, views: list[NSView], tile_height: int) -> tuple[NSView, int]:
