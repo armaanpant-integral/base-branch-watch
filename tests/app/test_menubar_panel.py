@@ -151,7 +151,63 @@ def _host(status_item):
         on_stale_click=lambda path: None,
         on_refresh=lambda: None,
         on_add_repo=lambda: None,
+        on_edit_base=lambda path: None,
+        on_remove_repo=lambda path: None,
     )
+
+
+def test_install_panel_routes_tile_actions_to_the_existing_menu_handlers(app, monkeypatch):
+    captured: dict = {}
+
+    class FakeHost:
+        def __init__(self, status_item, **kwargs):
+            captured.update(kwargs)
+
+        def install(self):
+            pass
+
+    calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(app, "_nsapp", SimpleNamespace(nsstatusitem=object()), raising=False)
+    monkeypatch.setattr(menubar, "PanelHost", FakeHost)
+    monkeypatch.setattr(
+        app,
+        "_edit_base_branches_click_handler",
+        lambda path: lambda _s: calls.append(("edit", path)),
+    )
+    monkeypatch.setattr(
+        app,
+        "_remove_repo_click_handler",
+        lambda path: lambda _s: calls.append(("remove", path)),
+    )
+
+    app._install_panel(None)
+    captured["on_edit_base"]("/repos/a")
+    captured["on_remove_repo"]("/repos/b")
+
+    assert calls == [("edit", "/repos/a"), ("remove", "/repos/b")]
+
+
+def test_host_closes_the_popover_before_running_a_tile_action(monkeypatch):
+    order: list[str] = []
+    seen: list[str] = []
+    host = panel_host.PanelHost(
+        MagicMock(),
+        get_model=lambda: None,
+        get_seconds_since_check=lambda: None,
+        on_repo_click=lambda path: None,
+        on_stale_click=lambda path: None,
+        on_refresh=lambda: None,
+        on_add_repo=lambda: None,
+        on_edit_base=lambda path: (order.append("edit"), seen.append(path)),
+        on_remove_repo=lambda path: (order.append("remove"), seen.append(path)),
+    )
+    monkeypatch.setattr(host._panel, "close", lambda: order.append("close"))
+
+    host._panel._on_edit_base("/repos/a")
+    host._panel._on_remove_repo("/repos/b")
+
+    assert order == ["close", "edit", "close", "remove"]
+    assert seen == ["/repos/a", "/repos/b"]
 
 
 def test_install_failure_puts_the_menu_back(monkeypatch):

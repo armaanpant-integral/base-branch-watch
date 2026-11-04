@@ -624,6 +624,7 @@ class BaseBranchWatchApp(rumps.App):
             self._rebuild_remove_submenu()
             self._rebuild_edit_submenu()
             self._render(list(self.statuses.values()))
+            self._refresh_panel()
 
         return handler
 
@@ -773,6 +774,10 @@ class BaseBranchWatchApp(rumps.App):
                 on_stale_click=self._show_stale_branches,
                 on_refresh=lambda: self.check_all(None),
                 on_add_repo=lambda: self._add_repo(None),
+                on_edit_base=lambda repo_path: self._edit_base_branches_click_handler(repo_path)(
+                    None
+                ),
+                on_remove_repo=lambda repo_path: self._remove_repo_click_handler(repo_path)(None),
             )
             self._panel_host.install()
         except Exception as exc:  # noqa: BLE001 - dashboard is optional, keep the menu
