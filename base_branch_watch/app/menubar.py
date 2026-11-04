@@ -624,7 +624,6 @@ class BaseBranchWatchApp(rumps.App):
             self._rebuild_remove_submenu()
             self._rebuild_edit_submenu()
             self._render(list(self.statuses.values()))
-            self._refresh_panel()
 
         return handler
 
